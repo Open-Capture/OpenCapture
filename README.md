@@ -8,11 +8,10 @@
 
 Capture a full page, the visible viewport, or a hand-picked region — then
 crop, arrow, rectangle, blur, or watermark it, and export as PNG or PDF.
-Every pixel operation happens on your machine, in a Rust/WebAssembly core
-compiled from the same source that's also unit- and property-tested
-natively. Nothing is uploaded anywhere, no account is needed, and the
-capture pipeline never has standing access to any page you haven't
-explicitly asked it to capture.
+Every pixel operation happens on your machine, in a Rust/WebAssembly core —
+nothing is uploaded anywhere, no account is needed, and the capture
+pipeline never has standing access to any page you haven't explicitly
+asked it to capture.
 
 ## Why local matters
 
@@ -78,11 +77,11 @@ PDF export, and is open source under a copyleft license.
 
 ## Status
 
-Milestones M0–M17 are implemented and tested (native Rust suite,
-Playwright e2e against real Chrome, both build targets). **Not yet
-published** to the Chrome Web Store or Firefox Add-ons — that requires
-store credentials this project doesn't yet have. Until then, install it
-as an unpacked/temporary extension from a local build; see
+Feature-complete: full-page/visible/selected-area capture, crop/annotate/
+watermark, and PNG/PDF export all work today. **Not yet published** to
+the Chrome Web Store or Firefox Add-ons — that requires store credentials
+this project doesn't yet have. Until then, install it as an unpacked/
+temporary extension from a local build; see
 [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md) and
 [docs/FIREFOX_TESTING.md](docs/FIREFOX_TESTING.md).
 
@@ -116,11 +115,10 @@ around it.
 
 - **`crates/shot-core`** — scroll-target planning, gap/overlap-free slice
   stitching, PNG decode/stitch/encode, multi-page PDF export, oversized-
-  canvas splitting. Compiles natively (unit + `proptest`) and to
-  `wasm32-unknown-unknown` via `wasm-bindgen`.
-- **`crates/shot-qa`** — native CLI for golden-assertion QA (PNG/PDF
-  structural inspection, hashing, pixel sampling/diffing), used by its own
-  integration tests and by the Playwright e2e suite.
+  canvas splitting. Compiles natively and to `wasm32-unknown-unknown` via
+  `wasm-bindgen`.
+- **`crates/shot-qa`** — native CLI for PNG/PDF structural inspection,
+  hashing, and pixel sampling/diffing.
 - **`apps/extension`** — the MV3 shell (TypeScript, Vite): background
   service worker orchestrates capture, an on-demand content script
   handles DOM/lazy-load/sticky-element prep, and the popup/editor pages
@@ -136,17 +134,6 @@ export feature — everything above works fully offline. An optional
 OpenApps sign-in exists in the popup for a possible future paid tier (a
 larger/remote feature that isn't implemented yet); declining it changes
 nothing about the extension's core functionality.
-
-## Testing
-
-```bash
-cargo test --workspace                 # Rust unit + property tests
-cd apps/extension && npm run typecheck
-npm run e2e                            # Playwright, real headless Chrome
-```
-
-CI (`.github/workflows/ci.yml`) runs fmt/clippy, the full Rust test suite,
-both extension builds, and the e2e suite on every push and PR.
 
 ## License
 
