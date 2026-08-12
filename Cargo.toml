@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shot-core",
+    "crates/shot-qa",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/openapps/opencapture"
+
+[workspace.dependencies]
+# --- internal crates ---
+shot-core = { path = "crates/shot-core" }
+
+# --- imaging ---
+png = "0.17"
+
+# --- pdf export ---
+pdf-writer = "0.12"
+flate2 = "1"
+
+# --- pdf inspection (QA-side assertions only) ---
+lopdf = "0.36"
+
+# --- wasm bindings (shot-core, wasm32 target only) ---
+# Pinned exact: wasm-bindgen requires the `wasm-bindgen` crate version and
+# the `wasm-bindgen-cli` binary version to match exactly (the JS-glue
+# schema is versioned). CLI is installed via `cargo install wasm-bindgen-cli
+# --version 0.2.100 --locked`; keep this pin and that install in lockstep.
+wasm-bindgen = "=0.2.100"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- hashing / misc ---
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "2"
+
+# --- QA CLI ---
+clap = { version = "4", features = ["derive"] }
+
+# --- testing ---
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+# wasm-opt is not run automatically; the extension build pipeline runs
+# `wasm-opt -O3` explicitly (see apps/extension/scripts/build-wasm.sh) so
+# `cargo build --target wasm32-unknown-unknown` stays fast for iteration.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+panic = "abort"

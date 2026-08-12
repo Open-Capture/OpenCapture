@@ -1,0 +1,13 @@
+/* OpenApps design tokens, vendored from openapps-design (no CDN — MV3 CSP
+   blocks remote stylesheets same as remote scripts). Subset actually used
+   by this extension: colors/typography/spacing/radius/elevation/motion,
+   the base reset, and fonts trimmed to the 400/500 weights product UI uses.
+   Regenerate from the skill's tokens/ if the source palette changes. */
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/radius.css";
+@import "./tokens/elevation.css";
+@import "./tokens/motion.css";
+@import "./tokens/base.css";

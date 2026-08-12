@@ -1,0 +1,29 @@
+{
+  "name": "@opencapture/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "icons": "node scripts/generate-icons.mjs",
+    "build": "npm run build:wasm && vite build && node scripts/copy-static.mjs",
+    "build:firefox": "npm run build:wasm && TARGET_BROWSER=firefox vite build && TARGET_BROWSER=firefox node scripts/copy-static.mjs",
+    "dev": "npm run build:wasm && vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@openapps/sdk": "file:../../../sdk/ts",
+    "@openapps/tokens": "file:../../../tokens",
+    "@openapps/ui": "file:../../../ui-elements"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/chrome": "^0.0.280",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  }
+}

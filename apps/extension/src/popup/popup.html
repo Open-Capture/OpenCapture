@@ -1,0 +1,169 @@
+<!doctype html>
+<html class="oa-auto">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenCapture</title>
+    <link rel="stylesheet" href="../styles/main.css" />
+    <style>
+      body {
+        width: var(--popup-w);
+      }
+      #popupHeader {
+        display: flex;
+        align-items: center;
+        height: 44px;
+        padding: 0 var(--space-4);
+        border-bottom: var(--border-width) solid var(--border-hairline);
+      }
+      #openAccount {
+        margin-left: auto;
+      }
+      #popupBody {
+        padding: var(--space-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+      }
+      #tagline {
+        margin-top: calc(var(--space-4) * -1 + var(--space-1));
+      }
+      #saveLocation {
+        border: var(--border-width) solid var(--border-hairline);
+        border-radius: var(--radius-lg);
+        margin: 0;
+        padding: var(--space-3);
+      }
+      #saveLocation legend {
+        padding: 0 var(--space-1) var(--space-1);
+        font: var(--type-eyebrow);
+        letter-spacing: var(--tracking-caps);
+        text-transform: uppercase;
+        color: var(--text-faint);
+      }
+      #saveLocation .field + .field {
+        margin-top: var(--space-3);
+      }
+      #customFolderRow {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+      }
+      #customFolderName {
+        flex: 1;
+        min-width: 0;
+      }
+      #captureActions {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+      }
+      #resultCard {
+        padding: var(--space-3);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+      }
+      #resultActions {
+        display: flex;
+        gap: var(--space-2);
+      }
+      #resultActions .btn {
+        flex: 1;
+      }
+      #preview {
+        display: none;
+        width: 100%;
+        border-radius: var(--radius-md);
+        border: var(--border-width) solid var(--border-hairline);
+      }
+      #report {
+        display: none;
+        margin: 0;
+        font: 11px/1.5 var(--font-mono);
+        color: var(--text-muted);
+        background: var(--bg-subtle);
+        border-radius: var(--radius-md);
+        padding: var(--space-2);
+        white-space: pre-wrap;
+        max-height: 160px;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header id="popupHeader">
+      <span class="brand">
+        <img class="brand-icon" src="../assets/logo/icon.svg" alt="" width="20" height="20" />
+        <img class="brand-wordmark brand-wordmark-light" src="../assets/logo/wordmark.svg" alt="OpenCapture" />
+        <img class="brand-wordmark brand-wordmark-dark" src="../assets/logo/wordmark-dark.svg" alt="OpenCapture" />
+      </span>
+      <!-- The only control in this popup that talks to a server — everything
+           else here (capture, edit, save) stays on-device whether or not
+           this is ever clicked. Opens a full tab rather than doing
+           anything in-popup, since a popup closes the moment it loses
+           focus and can't host a real sign-in or checkout flow. -->
+      <button id="openAccount" class="btn btn-secondary btn-sm" title="Account">
+        <span id="accountLabel">Sign in</span>
+      </button>
+    </header>
+    <div id="popupBody">
+      <p id="tagline" class="oa-caption">100% local. No cloud upload, no watermark, no paywall.</p>
+
+      <fieldset id="saveLocation">
+        <legend>Save to</legend>
+        <label class="field">
+          <span class="field-label">Filename</span>
+          <span class="field-control">
+            <input id="prefFilename" type="text" placeholder="opencapture" />
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">Folder</span>
+          <div id="customFolderRow">
+            <span id="customFolderName" class="field-hint">Your Downloads folder (default)</span>
+            <button id="browseFolder" type="button" class="btn btn-secondary btn-sm">
+              <span class="oa-icon oa-icon-14 icon-folder-open"></span>
+              Browse…
+            </button>
+          </div>
+        </label>
+      </fieldset>
+
+      <div id="captureActions">
+        <button id="captureFullPage" class="btn btn-primary btn-full btn-lg">
+          <span class="oa-icon icon-camera"></span>
+          Capture full page
+        </button>
+        <button id="captureVisible" class="btn btn-secondary btn-full">
+          <span class="oa-icon icon-image"></span>
+          Capture visible area
+        </button>
+        <button id="captureSelectedArea" class="btn btn-secondary btn-full">
+          <span class="oa-icon icon-crop"></span>
+          Capture selected area
+        </button>
+      </div>
+
+      <div id="resultCard" class="card">
+        <div id="status" class="status">No capture yet — choose an action above.</div>
+        <div id="resultActions">
+          <button id="exportPdf" class="btn btn-secondary btn-sm" disabled>
+            <span class="oa-icon oa-icon-14 icon-file-down"></span>
+            PDF
+          </button>
+          <button id="copyToClipboard" class="btn btn-secondary btn-sm" disabled>
+            <span class="oa-icon oa-icon-14 icon-copy"></span>
+            Copy
+          </button>
+          <button id="openEditor" class="btn btn-secondary btn-sm" disabled>
+            <span class="oa-icon oa-icon-14 icon-pen-line"></span>
+            Annotate
+          </button>
+        </div>
+        <img id="preview" alt="capture preview" />
+        <pre id="report"></pre>
+      </div>
+    </div>
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>

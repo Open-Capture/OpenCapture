@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>lazy-native</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      .spacer {
+        height: 800px;
+        background: #eee;
+      }
+      img {
+        display: block;
+        width: 200px;
+        height: 200px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="spacer"></div>
+    <!--
+      A 1x1 lime-green PNG data URI, scaled to 200x200 — deliberately not
+      the placeholder color, so a screenshot capturing the placeholder
+      state instead of the loaded image is trivially visible in a pixel
+      sample.
+    -->
+    <img
+      loading="lazy"
+      alt="lazy"
+      src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMwOmv0HwAElwIxKulfMAAAAABJRU5ErkJggg=="
+    />
+    <div class="spacer"></div>
+  </body>
+</html>

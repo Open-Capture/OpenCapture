@@ -1,0 +1,33 @@
+[package]
+name = "shot-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+png = { workspace = true }
+pdf-writer = { workspace = true }
+flate2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+# wasm-only: src/wasm.rs is `#[cfg(target_arch = "wasm32")]`-gated, so these
+# are only actually compiled into wasm32 builds despite being unconditional
+# dependencies here.
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+lopdf = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

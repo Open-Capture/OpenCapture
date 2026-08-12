@@ -1,0 +1,8 @@
+/* Geist + Geist Mono, vendored locally (MV3 blocks remote font requests).
+   Product UI only ever uses 400/500, so only those two weights per family
+   are shipped — see openapps-design's tokens/fonts.css for the full set. */
+
+@font-face{font-family:"Geist";font-style:normal;font-weight:400;font-display:swap;src:url("../../assets/fonts/Geist-Regular.otf") format("opentype")}
+@font-face{font-family:"Geist";font-style:normal;font-weight:500;font-display:swap;src:url("../../assets/fonts/Geist-Medium.otf") format("opentype")}
+@font-face{font-family:"Geist Mono";font-style:normal;font-weight:400;font-display:swap;src:url("../../assets/fonts/GeistMono-Regular.otf") format("opentype")}
+@font-face{font-family:"Geist Mono";font-style:normal;font-weight:500;font-display:swap;src:url("../../assets/fonts/GeistMono-Medium.otf") format("opentype")}

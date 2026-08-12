@@ -1,0 +1,27 @@
+
+[2mRunning [22m22[2m tests using [22m1[2m worker[22m
+
+  [32m✓[39m  [2m 1 [22me2e/capture.spec.ts:32:1 › extension loads: service worker starts and wasm module initializes[2m (3.1s)[22m
+  [32m✓[39m  [2m 2 [22me2e/capture.spec.ts:41:1 › popup renders its controls[2m (1.3s)[22m
+  [32m✓[39m  [2m 3 [22me2e/capture.spec.ts:49:1 › full-page capture stitches a long page without duplicated or missing bands[2m (4.8s)[22m
+  [32m✓[39m  [2m 4 [22me2e/capture.spec.ts:112:1 › capturing the same tab twice without a reload doesn't throw a content-script re-injection SyntaxError[2m (8.0s)[22m
+  [32m✓[39m  [2m 5 [22me2e/capture.spec.ts:164:1 › sticky/fixed elements appear once, not duplicated across every slice[2m (4.5s)[22m
+  [32m✓[39m  [2m 6 [22me2e/capture.spec.ts:205:1 › native lazy-loaded image is forced to load before capture[2m (3.4s)[22m
+  [32m✓[39m  [2m 7 [22me2e/capture.spec.ts:237:1 › selected-area capture crops to exactly the dragged rectangle[2m (1.5s)[22m
+  [32m✓[39m  [2m 8 [22me2e/capture.spec.ts:287:1 › selected-area capture returns null when the user cancels[2m (1.2s)[22m
+  [32m✓[39m  [2m 9 [22me2e/capture.spec.ts:316:1 › annotation editor: rectangle draws, blur pixelates, undo reverts[2m (2.5s)[22m
+  [32m✓[39m  [2m10 [22me2e/capture.spec.ts:507:1 › drag tools (arrow/rect/blur) don't touch canvas pixel data mid-drag, only at commit[2m (5.0s)[22m
+  [32m✓[39m  [2m11 [22me2e/capture.spec.ts:603:1 › crop tool auto-scrolls the canvas wrapper while dragging near its edge[2m (5.3s)[22m
+  [32m✓[39m  [2m12 [22me2e/capture.spec.ts:674:1 › editor canvas scales to fit the window and maps clicks correctly when scaled[2m (1.7s)[22m
+  [32m✓[39m  [2m13 [22me2e/capture.spec.ts:761:1 › previewCanvas's backing buffer tracks its own rendered size, not the full capture resolution[2m (1.6s)[22m
+  [32m✓[39m  [2m14 [22me2e/capture.spec.ts:828:1 › text tool creates an editable text box at the clicked position, stays adjustable until committed[2m (1.6s)[22m
+  [32m✓[39m  [2m15 [22me2e/capture.spec.ts:923:1 › select tool moves and resizes a pending shape before it's committed[2m (2.0s)[22m
+  [32m✓[39m  [2m16 [22me2e/capture.spec.ts:1025:1 › capturing opens the editor instead of downloading immediately[2m (1.5s)[22m
+  [32m✓[39m  [2m17 [22me2e/capture.spec.ts:1077:1 › save-location preferences (filename) apply to downloads[2m (1.8s)[22m
+  [32m✓[39m  [2m18 [22me2e/capture.spec.ts:1168:1 › popup: clicking Browse doesn't crash or persist a handle when the picker can't be shown[2m (2.3s)[22m
+  [32m✓[39m  [2m19 [22me2e/capture.spec.ts:1184:1 › copy to clipboard: popup writes directly, without a background/offscreen round-trip[2m (1.5s)[22m
+  [32m✓[39m  [2m20 [22me2e/capture.spec.ts:1246:1 › popup: restores report/preview/enabled buttons after closing and reopening[2m (1.6s)[22m
+  [32m✓[39m  [2m21 [22me2e/capture.spec.ts:1309:1 › blob-store round-trips a payload larger than chrome.runtime.sendMessage's 64MiB cap[2m (1.2s)[22m
+  [32m✓[39m  [2m22 [22me2e/capture.spec.ts:1321:1 › export-as-PDF and annotate survive the background service worker being evicted after a capture[2m (1.6s)[22m
+
+[32m  22 passed[39m[2m (59.9s)[22m

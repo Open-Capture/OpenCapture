@@ -1,0 +1,1497 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, test } from "./fixtures";
+
+const BASE_URL = "http://localhost:8934";
+const SHOT_QA_BIN = process.env.SHOT_QA_BIN ?? "/tmp/opencapture-target/debug/shot-qa";
+// A real, small PNG already in the repo — no synthetic fixture needed.
+const LOGO_FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "public", "icons", "icon48.png");
+
+function shotQa(args: string[]): { code: number; stdout: string } {
+  try {
+    const stdout = execFileSync(SHOT_QA_BIN, args, { encoding: "utf8" });
+    return { code: 0, stdout };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: Buffer | string };
+    return { code: e.status ?? 1, stdout: (e.stdout ?? "").toString() };
+  }
+}
+
+function writeBase64Png(dir: string, name: string, base64: string): string {
+  const path = join(dir, name);
+  writeFileSync(path, Buffer.from(base64, "base64"));
+  return path;
+}
+
+test.beforeAll(() => {
+  if (!existsSync(SHOT_QA_BIN)) {
+    throw new Error(`shot-qa binary not found at ${SHOT_QA_BIN} — build it first: cargo build -p shot-qa`);
+  }
+});
+
+test("extension loads: service worker starts and wasm module initializes", async ({ serviceWorker }) => {
+  const targets = await serviceWorker.evaluate(async () => {
+    // @ts-expect-error test-only global, see background/index.ts
+    return globalThis.__test.scrollTargets(3000, 720);
+  });
+  expect(targets[0]).toBe(0);
+  expect(targets[targets.length - 1]! + 720).toBeGreaterThanOrEqual(3000);
+});
+
+test("popup renders its controls", async ({ context, extensionId }) => {
+  const page = await context.newPage();
+  await page.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(page.locator("#captureFullPage")).toBeVisible();
+  await expect(page.locator("#captureVisible")).toBeVisible();
+  await page.close();
+});
+
+test("full-page capture stitches a long page without duplicated or missing bands", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}; open tabs: ${JSON.stringify(tabs.map((t) => t.url))}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const result = await serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    },
+    { tabId: tabId.tabId, windowId: tabId.windowId },
+  );
+
+  expect(result.report.slice_count).toBeGreaterThan(1);
+  expect(result.report.output_height_px).toBe(3000);
+  expect(result.report.output_width_px).toBe(1000);
+  expect(result.imagesBase64.length).toBe(1);
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "ruler.png", result.imagesBase64[0]);
+
+  const info = shotQa(["png-info", pngPath]);
+  expect(info.code).toBe(0);
+  const parsedInfo = JSON.parse(info.stdout);
+  expect(parsedInfo.width).toBe(1000);
+  expect(parsedInfo.height).toBe(3000);
+
+  // Every one of the 30 generated bands must appear at its exact expected
+  // row with its exact expected color — this is the golden assertion for
+  // the whole scroll-and-stitch pipeline: a duplicated or skipped slice
+  // shows up here as a wrong color at a specific, named band index.
+  const bandSample = shotQa([
+    "band-sample",
+    pngPath,
+    "--bands",
+    "30",
+    "--band-height",
+    "100",
+    "--x",
+    "10",
+    "--y-offset",
+    "50",
+  ]);
+  expect(bandSample.code).toBe(0);
+  const bands = JSON.parse(bandSample.stdout) as Array<{ band: number; r: number; g: number; b: number }>;
+  expect(bands.length).toBe(30);
+  for (const band of bands) {
+    const expectedR = (band.band * 53) % 256;
+    const expectedG = (band.band * 97) % 256;
+    const expectedB = (band.band * 151) % 256;
+    expect(band, `band ${band.band}`).toMatchObject({ r: expectedR, g: expectedG, b: expectedB });
+  }
+
+  await page.close();
+});
+
+test("capturing the same tab twice without a reload doesn't throw a content-script re-injection SyntaxError", async ({
+  context,
+  serviceWorker,
+}) => {
+  // chrome.scripting.executeScript's isolated world persists across
+  // repeated injections into the same tab/frame (only torn down on
+  // navigation) — content.js's top-level const/let declarations used to
+  // throw "Uncaught SyntaxError: Identifier '...' has already been
+  // declared" on the second injection into a page the user hadn't
+  // reloaded, silently breaking every capture after the first one. See
+  // content/index.ts's re-injection guard.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  // The redeclaration SyntaxError surfaces as an uncaught exception on the
+  // *page* (a `pageerror` event) — not a console.error call, and not a
+  // rejected chrome.scripting.executeScript() promise (that call resolves
+  // "ok" regardless, since the file genuinely was injected; it's the
+  // re-injected script's own top-level execution that throws, separately
+  // and asynchronously). It also doesn't break the capture's *own*
+  // report/result — the first injection's already-registered message
+  // listener keeps handling requests fine even while the second injection
+  // silently fails in the background — so report assertions alone
+  // wouldn't have caught this bug; only the pageerror listener does.
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  const captureOnce = () =>
+    serviceWorker.evaluate(async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    }, tabInfo);
+
+  const first = await captureOnce();
+  const second = await captureOnce(); // same tab, no navigation in between — this used to throw
+  await page.waitForTimeout(300); // pageerror fires asynchronously relative to executeScript resolving
+
+  expect(first.report.output_height_px).toBe(3000);
+  expect(second.report.output_height_px).toBe(3000);
+  expect(pageErrors.filter((m) => m.includes("has already been declared"))).toEqual([]);
+
+  await page.close();
+});
+
+test("sticky/fixed elements appear once, not duplicated across every slice", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/sticky-fixed.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const result = await serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  expect(result.report.pinned_elements_handled).toBeGreaterThanOrEqual(2); // header + badge (+ sticky subheader)
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "sticky.png", result.imagesBase64[0]);
+
+  // magenta header: must appear at the very top, and must NOT reappear at
+  // a middle-of-page sample point (which would mean it leaked into every
+  // slice instead of being hidden after the first).
+  const top = JSON.parse(shotQa(["band-sample", pngPath, "--bands", "1", "--band-height", "1", "--x", "10", "--y-offset", "10"]).stdout)[0];
+  expect(top).toMatchObject({ r: 255, g: 0, b: 255 });
+
+  const middle = JSON.parse(
+    shotQa(["band-sample", pngPath, "--bands", "1", "--band-height", "1", "--x", "10", "--y-offset", String(Math.floor(result.report.output_height_px / 2))]).stdout,
+  )[0];
+  expect(middle.r).not.toBe(255);
+  expect(middle.g).not.toBe(0);
+  expect(middle.b).not.toBe(255);
+
+  await page.close();
+});
+
+test("native lazy-loaded image is forced to load before capture", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 400, height: 600 });
+  await page.goto(`${BASE_URL}/lazy-native.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const result = await serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  expect(result.report.lazy_images_forced).toBeGreaterThanOrEqual(1);
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "lazy.png", result.imagesBase64[0]);
+
+  // The image sits at CSS y=800..1000, x=0..200 — sample its center.
+  const sample = JSON.parse(shotQa(["band-sample", pngPath, "--bands", "1", "--band-height", "1", "--x", "100", "--y-offset", "900"]).stdout)[0];
+  expect(sample).toMatchObject({ r: 50, g: 205, b: 50 }); // lime-green loaded content, not a blank/placeholder pixel
+
+  await page.close();
+});
+
+test("selected-area capture crops to exactly the dragged rectangle", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  // Kick off the background-driven selection flow, THEN drive real mouse
+  // events on the page — captureSelectedArea's promise won't resolve until
+  // the content script's overlay sees a mouseup, so these must run
+  // concurrently, not sequentially.
+  const resultPromise = serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureSelectedArea(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  // Band 5 spans CSS y=[500,600) with color rgb(9,229,243) (see
+  // ruler-3000.html's formula); select well clear of its text label.
+  await page.waitForTimeout(200); // let the overlay actually attach
+  await page.mouse.move(10, 540);
+  await page.mouse.down();
+  await page.mouse.move(110, 580, { steps: 5 });
+  await page.mouse.up();
+
+  const result = await resultPromise;
+  expect(result).not.toBeNull();
+  expect(result.report.output_width_px).toBe(100);
+  expect(result.report.output_height_px).toBe(40);
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "selection.png", result.imagesBase64[0]);
+
+  const info = JSON.parse(shotQa(["png-info", pngPath]).stdout);
+  expect(info.width).toBe(100);
+  expect(info.height).toBe(40);
+
+  const sample = JSON.parse(shotQa(["band-sample", pngPath, "--bands", "1", "--band-height", "1", "--x", "50", "--y-offset", "20"]).stdout)[0];
+  expect(sample).toMatchObject({ r: 9, g: 229, b: 243 });
+
+  await page.close();
+});
+
+test("selected-area capture returns null when the user cancels", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const resultPromise = serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureSelectedArea(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Escape");
+
+  const result = await resultPromise;
+  expect(result).toBeNull();
+
+  await page.close();
+});
+
+test("annotation editor: rectangle draws, blur pixelates, undo reverts", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  // ruler-3000's band colors follow an exact known formula with no
+  // surrounding page chrome (headers/margins) to reason about, unlike
+  // sticky-fixed.html — keeps the blur assertions below independent of any
+  // CSS layout assumption.
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    // canvas.width > 0 alone is satisfied by the browser's default
+    // un-initialized canvas size (300x150) even before loadImage() runs --
+    // wait for dimensions that actually differ from that default pair.
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  function readPixel(x: number, y: number) {
+    return editorPage.evaluate(
+      ({ px, py }) => {
+        const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+        const ctx = canvas.getContext("2d")!;
+        return Array.from(ctx.getImageData(px, py, 1, 1).data);
+      },
+      { px: x, py: y },
+    );
+  }
+
+  // The canvas sits inside a padded, toolbar-offset wrapper — mouse
+  // coordinates are page-viewport-relative, but readPixel/getImageData are
+  // canvas-local, so every drag must be translated through the canvas's
+  // actual bounding box rather than assumed to start at the page origin.
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box — did it fail to load the image?");
+  function canvasToPage(localX: number, localY: number) {
+    return { x: canvasBox!.x + localX, y: canvasBox!.y + localY };
+  }
+
+  const beforeRect = await readPixel(100, 60);
+
+  await editorPage.click("#toolRect");
+  const start = canvasToPage(60, 60);
+  const end = canvasToPage(160, 160);
+  await editorPage.mouse.move(start.x, start.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(end.x, end.y, { steps: 5 });
+  await editorPage.mouse.up();
+
+  // Releasing the drag must NOT touch the real canvas either — the shape
+  // stays "pending" (movable/resizable via Select, see the dedicated test
+  // for that) until committed. Confirm that here before committing via
+  // Enter, the same way pendingCrop already works.
+  expect(await readPixel(100, 60)).toEqual(beforeRect);
+  await editorPage.keyboard.press("Enter");
+
+  // The rectangle's stroke sits at its edges, not its center — sample
+  // exactly on the top edge's centerline (y=60, the strokeRect path
+  // itself) rather than one pixel off it, which lands in the antialiased
+  // fade rather than the solid stroke.
+  const onStroke = await readPixel(100, 60);
+  expect(onStroke[0]).toBeGreaterThan(200); // red channel dominant
+  expect(onStroke[1]).toBeLessThan(100);
+
+  await editorPage.click("#undo");
+  const afterUndo = await readPixel(100, 60);
+  expect(afterUndo).toEqual(beforeRect);
+
+  // Blur: drag a region spanning the band2/band3 boundary at CSS y=300
+  // (band2 rgb(106,194,46) above, band3 rgb(159,35,197) below). Sample one
+  // pixel on each side of that exact boundary (y=299/y=300) — deep inside
+  // a uniformly-colored band, pixelating is legitimately a no-op (a
+  // uniform region's block average equals its own color), so the only
+  // sample pair that *must* change is one that straddles a real color
+  // transition. With blockSize computed as
+  // max(6, round(min(width,height)/12)) for this fixed 190×160 drag
+  // region, that's 13 — both y=299 and y=300 fall inside the same
+  // boundary-straddling mosaic block (canvas-local rows 298–310), so they
+  // must end up equal after blur despite starting from different colors.
+  const p1Before = await readPixel(30, 299);
+  const p2Before = await readPixel(30, 300);
+  expect(p1Before).not.toEqual(p2Before); // sanity: they really did straddle a boundary
+
+  await editorPage.click("#toolBlur");
+  const blurStart = canvasToPage(10, 220);
+  const blurEnd = canvasToPage(200, 380);
+  await editorPage.mouse.move(blurStart.x, blurStart.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(blurEnd.x, blurEnd.y, { steps: 5 });
+  await editorPage.mouse.up();
+  // Same pending/commit split as rect above — nothing pixelated yet.
+  expect(await readPixel(30, 299)).toEqual(p1Before);
+  await editorPage.keyboard.press("Enter");
+
+  const p1After = await readPixel(30, 299);
+  const p2After = await readPixel(30, 300);
+  expect(p1After).toEqual(p2After); // same mosaic block -> mixed, identical color now
+  expect(p1After).not.toEqual(p1Before); // and it's a real mix, not coincidentally unchanged
+
+  function canvasSize() {
+    return editorPage.evaluate(() => {
+      const c = document.getElementById("canvas") as HTMLCanvasElement;
+      return { width: c.width, height: c.height };
+    });
+  }
+
+  // --- crop tool: canvas must resize to exactly the dragged rect, and the
+  // resulting pixels must be the source region's own content. Band 4 (CSS
+  // y=400..500) is untouched by the rect/undo/blur steps above, so its
+  // color is still the exact ruler formula — a clean region to crop.
+  const beforeCrop = await canvasSize();
+  expect(beforeCrop).toEqual({ width: 800, height: 600 });
+
+  const band4 = [(4 * 53) % 256, (4 * 97) % 256, (4 * 151) % 256]; // readPixel returns [r,g,b,a]
+
+  await editorPage.click("#toolCrop");
+  const cropStart = canvasToPage(300, 400);
+  const cropEnd = canvasToPage(400, 450);
+  await editorPage.mouse.move(cropStart.x, cropStart.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(cropEnd.x, cropEnd.y, { steps: 5 });
+  await editorPage.mouse.up();
+
+  // Releasing the drag must NOT commit the crop — it enters an adjustable
+  // state instead (Apply/Cancel Crop appear, canvas is untouched).
+  expect(await canvasSize()).toEqual({ width: 800, height: 600 });
+  await expect(editorPage.locator("#cropApply")).toBeVisible();
+  await expect(editorPage.locator("#cropCancel")).toBeVisible();
+
+  // Adjust the marquee before committing: drag its bottom-right (se)
+  // handle — sitting exactly at the just-drawn (400,450) corner — out to
+  // (500,500), growing the pending selection from 100x50 to 200x100.
+  const seHandle = canvasToPage(400, 450);
+  const resizedCorner = canvasToPage(500, 500);
+  await editorPage.mouse.move(seHandle.x, seHandle.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(resizedCorner.x, resizedCorner.y, { steps: 5 });
+  await editorPage.mouse.up();
+  expect(await canvasSize()).toEqual({ width: 800, height: 600 }); // still not committed
+
+  await editorPage.click("#cropApply");
+  const afterCrop = await canvasSize();
+  expect(afterCrop).toEqual({ width: 200, height: 100 }); // the *adjusted* rect, not the original 100x50 draw
+  expect((await readPixel(0, 0)).slice(0, 3)).toEqual(band4);
+  expect((await readPixel(199, 99)).slice(0, 3)).toEqual(band4);
+  await expect(editorPage.locator("#cropApply")).toBeHidden();
+
+  // Undo must restore the original canvas *dimensions*, not just clip the
+  // pre-crop pixels into the still-cropped-size canvas (the bug the
+  // width/height-carrying Snapshot type exists to prevent).
+  await editorPage.click("#undo");
+  const afterCropUndo = await canvasSize();
+  expect(afterCropUndo).toEqual({ width: 800, height: 600 });
+  expect((await readPixel(350, 420)).slice(0, 3)).toEqual(band4); // same point, pre-crop coordinate space
+
+  // --- format choice: both PNG and PDF must be real downloadable files.
+  const [pngDownload] = await Promise.all([context.waitForEvent("download"), editorPage.click("#downloadPng")]);
+  const pngPath = await pngDownload.path();
+  if (!pngPath) throw new Error("PNG download produced no local path");
+  const pngMagic = readFileSync(pngPath).subarray(0, 8);
+  expect(Array.from(pngMagic)).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const [pdfDownload] = await Promise.all([context.waitForEvent("download"), editorPage.click("#downloadPdf")]);
+  const pdfPath = await pdfDownload.path();
+  if (!pdfPath) throw new Error("PDF download produced no local path");
+  expect(readFileSync(pdfPath).subarray(0, 5).toString("utf8")).toBe("%PDF-");
+  const pdfInfo = JSON.parse(shotQa(["pdf-info", pdfPath]).stdout);
+  expect(pdfInfo.pageCount).toBe(1);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("drag tools (arrow/rect/blur) don't touch canvas pixel data mid-drag, only at commit", async ({ context, serviceWorker }) => {
+  // The actual bug this guards against: the old implementation restored a
+  // full-canvas getImageData/putImageData snapshot on *every* mousemove
+  // during a drag — for a large capture that's a lot of pixel-copy work
+  // happening dozens of times a second, which is what made dragging
+  // (blur especially, since users drag it slowly and deliberately) very
+  // laggy. The fix moved live previews to a separate overlay canvas, so
+  // the real canvas should see getImageData called exactly zero times
+  // during the drag, and pixel reads only at the actual commit. This is a
+  // deterministic call-count check instead of a timing measurement,
+  // which would be flaky and environment-dependent.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+  await serviceWorker.evaluate(async ({ tabId, windowId }) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureFullPage(tabId, windowId);
+  }, tabInfo);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  await editorPage.evaluate(() => {
+    (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls = 0;
+    const proto = CanvasRenderingContext2D.prototype;
+    const original = proto.getImageData;
+    proto.getImageData = function (this: CanvasRenderingContext2D, ...args: Parameters<typeof original>) {
+      (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls++;
+      return original.apply(this, args);
+    };
+  });
+
+  await editorPage.click("#toolBlur");
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+
+  const start = { x: canvasBox.x + 20, y: canvasBox.y + 20 };
+  const end = { x: canvasBox.x + 200, y: canvasBox.y + 200 };
+  await editorPage.mouse.move(start.x, start.y);
+  await editorPage.mouse.down();
+
+  const callsAtDragStart = await editorPage.evaluate(
+    () => (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls,
+  );
+
+  // Many intermediate steps — a slow, deliberate drag, exactly what was
+  // reported as laggy — checking the call count never grows, not just
+  // that it matches at the two endpoints.
+  for (let i = 1; i <= 20; i++) {
+    const t = i / 20;
+    await editorPage.mouse.move(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t);
+  }
+
+  const callsBeforeMouseUp = await editorPage.evaluate(
+    () => (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls,
+  );
+  expect(callsBeforeMouseUp).toBe(callsAtDragStart);
+
+  await editorPage.mouse.up();
+
+  // Releasing the drag doesn't commit it either now — blur stays "pending"
+  // (adjustable via Select) until explicitly committed, so it shouldn't
+  // have touched real pixel data yet at this point either.
+  const callsAfterMouseUp = await editorPage.evaluate(
+    () => (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls,
+  );
+  expect(callsAfterMouseUp).toBe(callsBeforeMouseUp);
+
+  await editorPage.keyboard.press("Enter"); // commit the pending blur
+
+  const callsAfterCommit = await editorPage.evaluate(
+    () => (window as unknown as { __getImageDataCalls: number }).__getImageDataCalls,
+  );
+  expect(callsAfterCommit).toBeGreaterThan(callsAfterMouseUp);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("crop tool auto-scrolls the canvas wrapper while dragging near its edge", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+  await serviceWorker.evaluate(async ({ tabId, windowId }) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureFullPage(tabId, windowId);
+  }, tabInfo);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    // canvas.width > 0 alone is satisfied by the browser's default
+    // un-initialized canvas size (300x150) even before loadImage() runs --
+    // wait for dimensions that actually differ from that default pair.
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  // ruler-3000 stitched at 800x600 viewport is 800x3000 — far taller than
+  // #canvasWrap's visible area, so the wrapper starts scrolled to the top
+  // with most of the image below the fold.
+  const canvasHeight = await editorPage.evaluate(() => (document.getElementById("canvas") as HTMLCanvasElement).height);
+  expect(canvasHeight).toBe(3000);
+
+  const wrapBoxBefore = await editorPage.locator("#canvasWrap").boundingBox();
+  const canvasBoxBefore = await editorPage.locator("#canvas").boundingBox();
+  if (!wrapBoxBefore || !canvasBoxBefore) throw new Error("canvasWrap/canvas has no bounding box");
+  const scrollTopBefore = await editorPage.evaluate(() => document.getElementById("canvasWrap")!.scrollTop);
+  expect(scrollTopBefore).toBe(0);
+
+  await editorPage.click("#toolCrop");
+  // x from the canvas's own box, not the wrapper's — the canvas is
+  // centered horizontally within #canvasWrap (see editor.html) whenever
+  // it's narrower than the available width, so it doesn't necessarily
+  // start at the wrapper's left edge.
+  await editorPage.mouse.move(canvasBoxBefore.x + 40, wrapBoxBefore.y + 40);
+  await editorPage.mouse.down();
+  // Hold the cursor a couple pixels above the wrapper's bottom edge — well
+  // inside the AUTO_SCROLL_EDGE zone — without further movement. The
+  // auto-scroll loop is self-sustaining via requestAnimationFrame once
+  // started, so it keeps scrolling on this stationary cursor without any
+  // new mousemove events.
+  await editorPage.mouse.move(canvasBoxBefore.x + 40, wrapBoxBefore.y + wrapBoxBefore.height - 5, { steps: 3 });
+  await editorPage.waitForTimeout(600);
+
+  const scrollTopDuring = await editorPage.evaluate(() => document.getElementById("canvasWrap")!.scrollTop);
+  expect(scrollTopDuring).toBeGreaterThan(0);
+
+  await editorPage.mouse.up();
+  // Discard the resulting marquee — this test only cares about scroll
+  // behavior, not the crop it incidentally drew.
+  await editorPage.keyboard.press("Escape");
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("editor canvas scales to fit the window and maps clicks correctly when scaled", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  // Wider than the editor tab's own window (a fresh tab defaults to the
+  // browser window's real size, independent of whatever viewport this
+  // capture used) — the point is to force the canvas to actually be
+  // scaled down by editor.html's `max-width:100%`, not just render at its
+  // unscaled native size like every other test in this suite does.
+  await page.setViewportSize({ width: 2000, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    // canvas.width > 0 alone is satisfied by the browser's default
+    // un-initialized canvas size (300x150) even before loadImage() runs --
+    // wait for dimensions that actually differ from that default pair.
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  const bufferWidth = await editorPage.evaluate(() => (document.getElementById("canvas") as HTMLCanvasElement).width);
+  expect(bufferWidth).toBe(2000);
+
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+  // The actual regression this test guards: without CSS scaling (or with
+  // scaling but broken coordinate math), canvasBox.width would equal
+  // bufferWidth exactly (either genuinely unscaled, or visually scaled
+  // but every click still computed against the raw unscaled buffer size).
+  expect(canvasBox.width).toBeLessThan(bufferWidth);
+
+  const scale = bufferWidth / canvasBox.width;
+  function toScreen(bufferX: number, bufferY: number): { x: number; y: number } {
+    return { x: canvasBox!.x + bufferX / scale, y: canvasBox!.y + bufferY / scale };
+  }
+
+  await editorPage.click("#toolRect");
+  const start = toScreen(200, 60);
+  const end = toScreen(1800, 160);
+  await editorPage.mouse.move(start.x, start.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(end.x, end.y, { steps: 5 });
+  await editorPage.mouse.up();
+  await editorPage.keyboard.press("Enter"); // commit the pending rect
+
+  // strokeRect(200, 60, 1600, 100) — its top edge runs y=60, x=[200,1800].
+  // Sampling near its horizontal midpoint in *buffer* space (not client
+  // space) proves the drag was translated through the scale factor
+  // correctly, not left at raw unscaled coordinates (which would miss the
+  // stroke entirely at this buffer-space point once genuinely scaled
+  // down). A small window rather than one exact pixel: mouse events are
+  // integer CSS pixels, so the CSS-to-buffer scale factor (which depends
+  // on the canvas's own rendered box, itself layout-dependent) rounds
+  // slightly differently depending on chrome/toolbar geometry — the point
+  // here is "landed near the intended edge", not sub-pixel exactness.
+  const hasStrokeNearby = await editorPage.evaluate(() => {
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    const ctx = canvas.getContext("2d")!;
+    const region = ctx.getImageData(990, 54, 20, 12).data;
+    for (let i = 0; i < region.length; i += 4) {
+      if (region[i]! > 200 && region[i + 1]! < 100) return true; // red stroke, dominant red channel
+    }
+    return false;
+  });
+  expect(hasStrokeNearby).toBe(true);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("previewCanvas's backing buffer tracks its own rendered size, not the full capture resolution", async ({
+  context,
+  serviceWorker,
+}) => {
+  // The actual bug this guards against: previewCanvas used to be sized to
+  // `canvas`'s full native buffer resolution (tens of millions of pixels
+  // for a real full-page capture), so even though its draws were cheap
+  // shape primitives, the GPU still had to clear/composite that whole
+  // buffer on every single mousemove — which is what made dragging still
+  // "extremely laggy" even after the getImageData/putImageData stall
+  // (measured elsewhere in this suite) was fixed. previewCanvas's buffer
+  // should instead track its own on-screen CSS size, independent of how
+  // large the underlying capture is.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 2000, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  const sizes = await editorPage.evaluate(() => {
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    const preview = document.getElementById("previewCanvas") as HTMLCanvasElement;
+    return {
+      canvasWidth: canvas.width,
+      canvasClientWidth: canvas.clientWidth,
+      previewWidth: preview.width,
+      dpr: window.devicePixelRatio || 1,
+    };
+  });
+
+  // The editor tab's own window is narrower than the 2000px-wide capture,
+  // so canvas is genuinely scaled down (clientWidth < width) — confirms
+  // this test actually exercises the scaled-down case, not a no-op.
+  expect(sizes.canvasClientWidth).toBeLessThan(sizes.canvasWidth);
+  // previewCanvas's buffer should sit tight against its own rendered CSS
+  // width (× devicePixelRatio) — a couple of px of rounding tolerance, not
+  // the generous margin a "just less than the full capture" check would
+  // need, which would still pass even at the full multi-thousand-pixel
+  // capture width and so wouldn't actually catch a regression back to it.
+  expect(Math.abs(sizes.previewWidth - sizes.canvasClientWidth * sizes.dpr)).toBeLessThanOrEqual(2);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("text tool creates an editable text box at the clicked position, stays adjustable until committed", async ({
+  context,
+  serviceWorker,
+}) => {
+  // Two real, previously-broken failure modes this guards against: (1)
+  // the input was silently placed thousands of pixels away from the
+  // click — a canvas-buffer-space vs. CSS-space coordinate mixup, which
+  // made the text tool look like it did nothing at all rather than "did
+  // something invisible"; (2) even once positioned correctly, the input
+  // lost focus and removed itself in the same tick it was created —
+  // `canvas` isn't a focusable element, so the browser's own default
+  // mousedown handling blurs whatever was just focus()'d unless that
+  // default is explicitly suppressed.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+  const clickX = canvasBox.x + 200;
+  const clickY = canvasBox.y + 150;
+
+  await editorPage.click("#toolText");
+  await editorPage.mouse.click(clickX, clickY);
+
+  // Scoped to #canvasStack, not just input[type="text"]: that also matches
+  // the watermark tool's own (persistent, normally-hidden) text field —
+  // see editor.ts's startTextInput(), which appends this one to
+  // canvas.parentElement (#canvasStack) specifically.
+  const inputBox = await editorPage.locator('#canvasStack input[type="text"]').boundingBox();
+  if (!inputBox) throw new Error("text tool did not create an <input> at all");
+  expect(Math.abs(inputBox.x - clickX)).toBeLessThan(20);
+  expect(Math.abs(inputBox.y - clickY)).toBeLessThan(20);
+
+  await editorPage.keyboard.type("hello");
+  await editorPage.keyboard.press("Enter");
+  await expect(editorPage.locator('#canvasStack input[type="text"]')).toHaveCount(0);
+
+  const bufferPoint = await editorPage.evaluate(
+    ({ x, y }) => {
+      const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      const scale = canvas.width / rect.width;
+      return { x: Math.round((x - rect.left) * scale), y: Math.round((y - rect.top) * scale) };
+    },
+    { x: clickX, y: clickY },
+  );
+
+  function hasGlyphInkNear(point: { x: number; y: number }) {
+    return editorPage.evaluate(({ x, y }) => {
+      const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+      const ctx = canvas.getContext("2d")!;
+      const region = ctx.getImageData(Math.max(0, x - 10), Math.max(0, y - 5), 70, 25).data;
+      for (let i = 0; i < region.length; i += 4) {
+        if (region[i]! > 200 && region[i + 1]! < 100) return true; // red-dominant, anti-alias-free glyph ink
+      }
+      return false;
+    }, point);
+  }
+
+  // Committing the typed text (Enter) only turns it into a *pending*
+  // shape — selectable/movable/resizable, not yet baked — exactly like a
+  // freshly-drawn rect/arrow/blur. The real canvas shouldn't show it yet.
+  expect(await hasGlyphInkNear(bufferPoint)).toBe(false);
+
+  // Switching to a *different* tool commits it for real — switching to
+  // Select specifically would not (that's the one tool meant to keep it
+  // pending for further adjustment; see the dedicated select-tool test).
+  await editorPage.click("#toolCrop");
+  expect(await hasGlyphInkNear(bufferPoint)).toBe(true);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("select tool moves and resizes a pending shape before it's committed", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  function readPixel(x: number, y: number) {
+    return editorPage.evaluate(
+      ({ px, py }) => {
+        const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+        const ctx = canvas.getContext("2d")!;
+        return Array.from(ctx.getImageData(px, py, 1, 1).data);
+      },
+      { px: x, py: y },
+    );
+  }
+  function isRedStroke(pixel: number[]) {
+    return pixel[0]! > 200 && pixel[1]! < 100;
+  }
+
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+  function canvasToPage(localX: number, localY: number) {
+    return { x: canvasBox!.x + localX, y: canvasBox!.y + localY };
+  }
+
+  // Draw a rect from (60,60) to (160,160) — its top edge sits at y=60 —
+  // then, with the Select tool, drag its body down by 100px before ever
+  // committing it.
+  await editorPage.click("#toolRect");
+  const start = canvasToPage(60, 60);
+  const end = canvasToPage(160, 160);
+  await editorPage.mouse.move(start.x, start.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(end.x, end.y, { steps: 5 });
+  await editorPage.mouse.up();
+
+  await editorPage.click("#toolSelect");
+  const bodyPoint = canvasToPage(100, 100); // inside the pending rect, not on a handle
+  const moveTo = canvasToPage(100, 200);
+  await editorPage.mouse.move(bodyPoint.x, bodyPoint.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(moveTo.x, moveTo.y, { steps: 5 });
+  await editorPage.mouse.up();
+  await editorPage.keyboard.press("Enter"); // commit
+
+  // Only the *moved* position was ever baked — the rect was never
+  // committed at its original spot, since it moved before any commit.
+  expect(isRedStroke(await readPixel(100, 60))).toBe(false);
+  expect(isRedStroke(await readPixel(100, 160))).toBe(true);
+
+  await editorPage.click("#undo"); // back to a blank canvas for the resize check below
+
+  // Draw a second, small rect, then resize it via its se handle.
+  await editorPage.click("#toolRect");
+  const start2 = canvasToPage(300, 300);
+  const end2 = canvasToPage(340, 340);
+  await editorPage.mouse.move(start2.x, start2.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(end2.x, end2.y, { steps: 5 });
+  await editorPage.mouse.up();
+
+  await editorPage.click("#toolSelect");
+  const seHandle = canvasToPage(340, 340); // the rect's own se corner
+  const resizedCorner = canvasToPage(500, 500);
+  await editorPage.mouse.move(seHandle.x, seHandle.y);
+  await editorPage.mouse.down();
+  await editorPage.mouse.move(resizedCorner.x, resizedCorner.y, { steps: 5 });
+  await editorPage.mouse.up();
+  await editorPage.keyboard.press("Enter"); // commit
+
+  // The resized rect's right edge now runs through x=500 (y in [300,500]) —
+  // well outside the original 40×40 box.
+  expect(isRedStroke(await readPixel(500, 420))).toBe(true);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("capturing opens the editor instead of downloading immediately", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id || tab.windowId === undefined) throw new Error(`no tab found for ${url}`);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tab.id, { active: true });
+  }, page.url());
+
+  // Drives handleRequest({action:"captureVisible"}) — the exact function
+  // the real chrome.runtime.onMessage listener calls for a "Capture
+  // Visible Area" click — instead of the other __test.* hooks (which call
+  // orchestrator functions directly, bypassing handleRequest's download-
+  // vs-open-editor branch entirely). Doesn't go through a second tab
+  // standing in for popup.html: opening one as a real Playwright page and
+  // clicking it — even synthetically — reactivates that tab in Chrome and
+  // steals activeTab's target away from the page being captured, which a
+  // real toolbar popup (not a tab at all) never does.
+  const [editorPage, response] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureVisibleViaHandleRequest();
+    }),
+  ]);
+
+  expect(response.ok).toBe(true);
+  expect(response.openedEditor).toBe(true);
+
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    // canvas.width > 0 alone is satisfied by the browser's default
+    // un-initialized canvas size (300x150) even before loadImage() runs --
+    // wait for dimensions that actually differ from that default pair.
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  const canvasSize = await editorPage.evaluate(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return { width: c.width, height: c.height };
+  });
+  expect(canvasSize).toEqual({ width: 800, height: 600 });
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("save-location preferences (filename) apply to downloads", async ({ context, serviceWorker, extensionId }) => {
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  // popup.ts's async loadSavePrefs() sets the field's value (and
+  // placeholder) once chrome.storage.local resolves — wait for it,
+  // otherwise it can race a fill() below and clobber it back to empty.
+  await popup.waitForFunction(() => (document.getElementById("prefFilename") as HTMLInputElement).placeholder === "opencapture");
+  await popup.fill("#prefFilename", "e2e-custom");
+  // The popup only persists on "change", not every keystroke (see
+  // popup.ts) — dispatch it explicitly rather than relying on a real blur.
+  await popup.locator("#prefFilename").dispatchEvent("change");
+  await popup.close();
+
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    // canvas.width > 0 alone is satisfied by the browser's default
+    // un-initialized canvas size (300x150) even before loadImage() runs --
+    // wait for dimensions that actually differ from that default pair.
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  // Playwright's persistent context intercepts real downloads at the CDP
+  // level and redirects them into its own artifacts directory for test
+  // hermeticity — chrome.downloads.search()'s own `filename` record ends
+  // up reflecting *that* redirected path, not what the extension actually
+  // requested, so it can't verify our code produced the right path. What
+  // we actually want to verify is that our code called
+  // chrome.downloads.download() with the right `filename` argument in the
+  // first place — so stub that call out entirely (no real download needs
+  // to happen for this test) and inspect what it was invoked with.
+  await editorPage.evaluate(() => {
+    (window as unknown as { __downloadCalls: chrome.downloads.DownloadOptions[] }).__downloadCalls = [];
+    chrome.downloads.download = ((opts: chrome.downloads.DownloadOptions) => {
+      (window as unknown as { __downloadCalls: chrome.downloads.DownloadOptions[] }).__downloadCalls.push(opts);
+      return Promise.resolve(999);
+    }) as typeof chrome.downloads.download;
+  });
+
+  await editorPage.click("#downloadPng");
+  await editorPage.waitForFunction(
+    () => (window as unknown as { __downloadCalls: unknown[] }).__downloadCalls.length > 0,
+  );
+  const calls = await editorPage.evaluate(
+    () => (window as unknown as { __downloadCalls: chrome.downloads.DownloadOptions[] }).__downloadCalls,
+  );
+  expect(calls[0]!.filename).toBe("e2e-custom-annotated.png");
+
+  // Reset for any other test that happens to run in this same worker
+  // session afterward.
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.local.remove("savePrefs");
+  });
+
+  await editorPage.close();
+  await page.close();
+});
+
+// Headless Chromium has no real OS folder dialog to show, so
+// showDirectoryPicker() can't actually be driven end-to-end here the way
+// everything else in this suite is — Chromium auto-rejects it with an
+// AbortError instead (the same rejection a real user cancelling the dialog
+// produces), which pick-directory.ts already treats as a silent no-op.
+// This test covers what *is* verifiable headlessly: clicking Browse
+// directly in the popup (no separate tab — see pick-directory.ts) doesn't
+// crash the popup or leave a stale handle behind. Whether a *real*,
+// toolbar-anchored popup survives long enough for the OS dialog to
+// actually resolve is a real open question Playwright can't answer here
+// (it can't simulate opening one at all) — needs manual verification in a
+// real Chrome window, see PLAN.md.
+test("popup: clicking Browse doesn't crash or persist a handle when the picker can't be shown", async ({ context, extensionId }) => {
+  const popup = await context.newPage();
+  const pageErrors: Error[] = [];
+  popup.on("pageerror", (err) => pageErrors.push(err));
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+
+  await expect(popup.locator("#customFolderName")).toHaveText("Your Downloads folder (default)");
+  await popup.click("#browseFolder");
+  await popup.waitForTimeout(1000);
+
+  expect(pageErrors).toEqual([]);
+  await expect(popup.locator("#customFolderName")).toHaveText("Your Downloads folder (default)");
+
+  await popup.close();
+});
+
+test("copy to clipboard: popup writes directly, without a background/offscreen round-trip", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  // M9/M11 history: this used to route through background -> an offscreen
+  // document -> navigator.clipboard.write(). That could never work at all —
+  // offscreen documents are invisible and never become the focused
+  // document that API (and its execCommand fallback's transient-
+  // activation requirement) needs, confirmed in real Chrome, not just this
+  // headless harness. The real fix was architectural: do the write in the
+  // popup itself, the one document that actually receives the real click.
+  // See chrome/copy-image.ts.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  // The capture above went through the __test hook directly (orchestrator
+  // functions, not handleRequest — see other tests' comments on why),
+  // so popup.ts never saw a capture response and never enabled its
+  // buttons accordingly. That wiring is covered elsewhere; force the
+  // button open here so this test is only about the clipboard write
+  // itself, reading LAST_CAPTURE_BLOB_KEY (which the capture above did
+  // populate, via orchestrator.ts's rememberLastCapture()).
+  await popup.evaluate(() => {
+    (document.getElementById("copyToClipboard") as HTMLButtonElement).disabled = false;
+  });
+
+  // A real Playwright .click() dispatches trusted input, and popup.html —
+  // opened as a real tab here, unlike an offscreen document — genuinely
+  // can hold document focus, so this is close enough to real usage that a
+  // real navigator.clipboard.write() success is plausible, not just its
+  // execCommand fallback's own distinct failure (which is what every
+  // previous fully-synthetic attempt at testing this could ever reach).
+  await popup.click("#copyToClipboard");
+  await popup.waitForFunction(() => {
+    const s = document.getElementById("status")?.textContent ?? "";
+    return s.length > 0 && s !== "Copying to clipboard…";
+  });
+  const status = await popup.locator("#status").textContent();
+
+  // This genuinely succeeds now — not just "doesn't hit the old errors"
+  // like every previous attempt at testing this had to settle for.
+  expect(status).toBe("Copied to clipboard.");
+
+  await popup.close();
+  await page.close();
+});
+
+test("popup: restores report/preview/enabled buttons after closing and reopening", async ({ context, serviceWorker, extensionId }) => {
+  // MV3 popups are fully destroyed and recreated on every close, so this
+  // has to prove state survives an actual close+reopen, not just a single
+  // popup instance's in-memory state. Driving the capture itself through a
+  // real click on a *popup* page was already tried and abandoned earlier in
+  // this project (M12) — it repeatedly crashed the whole browser context,
+  // unrelated to the product code — so, like the clipboard test above,
+  // this seeds the "as if a prior popup capture already ran" state
+  // directly: a real capture (via the __test hook, which populates
+  // LAST_CAPTURE_BLOB_KEY through the real orchestrator.rememberLastCapture
+  // path) plus the small "lastCaptureUi" JSON exactly as popup.ts's own
+  // persistLastCaptureUi would have written it. What this test actually
+  // exercises — the part that was genuinely broken — is restoreLastCaptureUi
+  // itself: does a brand-new popup document correctly rebuild its UI from
+  // that persisted state.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  const report = await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    const { report } = await globalThis.__test.captureVisibleOnly(winId);
+    return report;
+  }, windowId);
+
+  await serviceWorker.evaluate(
+    async ({ key, ui }) => {
+      await chrome.storage.local.set({ [key]: ui });
+    },
+    { key: "lastCaptureUi", ui: { report, openedEditor: true } },
+  );
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+
+  await expect(popup.locator("#report")).toBeVisible();
+  await expect(popup.locator("#preview")).toBeVisible();
+  const reportText = await popup.locator("#report").textContent();
+  expect(JSON.parse(reportText ?? "")).toEqual(report);
+  const previewSrc = await popup.locator("#preview").getAttribute("src");
+  expect(previewSrc).toMatch(/^blob:/);
+  await expect(popup.locator("#exportPdf")).toBeEnabled();
+  await expect(popup.locator("#copyToClipboard")).toBeEnabled();
+  await expect(popup.locator("#openEditor")).toBeEnabled();
+  await expect(popup.locator("#status")).toHaveText("Opened in editor — crop, annotate, then choose PNG or PDF to save.");
+
+  await popup.close();
+
+  // Reset for any other test that happens to run in this same worker
+  // session afterward.
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.local.remove("lastCaptureUi");
+  });
+
+  await page.close();
+});
+
+test("blob-store round-trips a payload larger than chrome.runtime.sendMessage's 64MiB cap", async ({ serviceWorker }) => {
+  // Directly exercises the storage layer the clipboard/editor-handoff
+  // fixes now depend on, at a size (80MiB) that would have failed outright
+  // as a chrome.runtime.sendMessage payload — independent of whether any
+  // given test capture happens to PNG-compress that large.
+  const ok = await serviceWorker.evaluate(async () => {
+    // @ts-expect-error test-only global, see background/index.ts
+    return globalThis.__test.testLargeBlobRoundtrip(80 * 1024 * 1024);
+  });
+  expect(ok).toBe(true);
+});
+
+test("export-as-PDF and annotate survive the background service worker being evicted after a capture", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  // MV3 service workers suspend after ~30s idle and respawn with a
+  // completely fresh JS realm on the next event — orchestrator.ts used to
+  // keep the last capture's session/images/dpr in module-level `let`
+  // variables, which is exactly the kind of state that doesn't survive
+  // that respawn. M13's popup-persistence feature made this a real,
+  // user-facing bug rather than a theoretical one: the popup can now show
+  // "Export PDF"/"Annotate" as enabled for as long as the user likes after
+  // a capture (its own state comes from chrome.storage.local + blob-store,
+  // both durable), so clicking either after the service worker has
+  // recycled has to actually work, not throw "No capture to export/copy
+  // yet" against a session that's still technically valid from the user's
+  // point of view. Reproduced here by forcibly closing the real service
+  // worker's CDP target (not a timer) and confirming the request still
+  // succeeds once Chrome lazily respawns it.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  // A probe on the doomed worker's globalThis — read back afterward to
+  // confirm the request below actually ran in a genuinely new JS realm,
+  // not that closeTarget silently no-op'd and left the same one running.
+  await serviceWorker.evaluate(() => {
+    (globalThis as unknown as { __evictionProbe: number }).__evictionProbe = 42;
+  });
+
+  const cdp = await context.newCDPSession(page);
+  const { targetInfos } = await cdp.send("Target.getTargets");
+  const swTarget = targetInfos.find((t) => t.type === "service_worker" && t.url.endsWith("background.js"));
+  if (!swTarget) throw new Error(`no service_worker target found; targets: ${JSON.stringify(targetInfos.map((t) => t.type))}`);
+  await cdp.send("Target.closeTarget", { targetId: swTarget.targetId });
+
+  // Closing the target alone doesn't respawn it — MV3 only spins a service
+  // worker back up lazily, on the next event a live listener needs to
+  // handle. A real chrome.runtime.sendMessage from an extension page (the
+  // exact call popup.ts's own buttons make) is that event, so this both
+  // triggers the respawn and exercises the real request path in one step —
+  // not a __test hook standing in for it.
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+
+  const pdfResponse = await popup.evaluate(() => chrome.runtime.sendMessage({ action: "exportPdf" }));
+  expect(pdfResponse.ok).toBe(true);
+
+  const [freshWorker] = context.serviceWorkers();
+  if (!freshWorker) throw new Error("expected a respawned service worker after the message above");
+  const probeAfter = await freshWorker.evaluate(() => (globalThis as unknown as { __evictionProbe?: number }).__evictionProbe);
+  expect(probeAfter).toBeUndefined();
+
+  const editorResponse = await popup.evaluate(() => chrome.runtime.sendMessage({ action: "openEditor" }));
+  expect(editorResponse.ok).toBe(true);
+
+  await popup.close();
+  await page.close();
+});
+
+test("watermark tool: text and logo, remembers the chosen logo, undo reverts", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  // Mirrors editor.ts's own defaultWatermarkRect() exactly — the region a
+  // committed watermark actually lands in — rather than a single pixel,
+  // since neither text glyphs nor a logo fill their box solidly; a single
+  // sampled point could easily land in a gap and read as unchanged.
+  function sampleWatermarkRegion(): Promise<number[]> {
+    return editorPage.evaluate(() => {
+      const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+      const width = Math.max(80, Math.round(canvas.width * 0.22));
+      const height = Math.max(40, Math.round(width * 0.5));
+      const margin = Math.round(canvas.width * 0.02);
+      const x = Math.min(Math.max(0, canvas.width - width - margin), canvas.width - width);
+      const y = Math.min(Math.max(0, canvas.height - height - margin), canvas.height - height);
+      const ctx = canvas.getContext("2d")!;
+      return Array.from(ctx.getImageData(x, y, width, height).data);
+    });
+  }
+  function regionsDiffer(a: number[], b: number[]): boolean {
+    if (a.length !== b.length) return true;
+    return a.some((v, i) => v !== b[i]);
+  }
+
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+  const baseline = await sampleWatermarkRegion();
+
+  // --- text watermark: place, commit, verify pixels changed, undo reverts exactly ---
+  await editorPage.click("#toolWatermark");
+  await expect(editorPage.locator("#watermarkPanel")).toBeVisible();
+  await expect(editorPage.locator("#watermarkAdd")).toBeDisabled(); // neither text nor logo yet
+
+  await editorPage.fill("#watermarkText", "TEST");
+  await expect(editorPage.locator("#watermarkAdd")).toBeEnabled();
+  await editorPage.click("#watermarkAdd");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  // Committing works exactly like any other pending shape: the Select
+  // tool (now active — see editor.ts's watermarkAdd handler) bakes it in
+  // on a click outside its own rect.
+  await editorPage.mouse.click(canvasBox.x + 10, canvasBox.y + 10);
+  const afterText = await sampleWatermarkRegion();
+  expect(regionsDiffer(baseline, afterText)).toBe(true);
+
+  await editorPage.click("#undo");
+  const afterUndo = await sampleWatermarkRegion();
+  expect(regionsDiffer(baseline, afterUndo)).toBe(false);
+
+  // --- logo watermark: choosing a file is enough on its own (no text needed) ---
+  await editorPage.click("#toolWatermark");
+  await editorPage.locator("#watermarkLogoFile").setInputFiles(LOGO_FIXTURE_PATH);
+  await expect(editorPage.locator("#watermarkLogoPreview")).toBeVisible();
+  await expect(editorPage.locator("#watermarkAdd")).toBeEnabled();
+  await editorPage.click("#watermarkCancel");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  // Reopening remembers the logo without re-picking the file — see
+  // chrome/watermark-logo-store.ts.
+  await editorPage.click("#toolWatermark");
+  await expect(editorPage.locator("#watermarkLogoPreview")).toBeVisible();
+  await editorPage.click("#watermarkAdd");
+  // Unlike the text-only case above, this Add click awaits decoding the
+  // logo (fetch + createImageBitmap) before it sets the pending shape —
+  // wait for that to actually finish, or the click below can land before
+  // there's anything pending to commit.
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+  await editorPage.mouse.click(canvasBox.x + 10, canvasBox.y + 10);
+  const afterLogo = await sampleWatermarkRegion();
+  expect(regionsDiffer(baseline, afterLogo)).toBe(true);
+
+  await editorPage.close();
+  await page.close();
+});

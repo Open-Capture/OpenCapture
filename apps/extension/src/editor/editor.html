@@ -1,0 +1,227 @@
+<!doctype html>
+<html class="oa-auto">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenCapture Editor</title>
+    <link rel="stylesheet" href="../styles/main.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        /* #canvasWrap filling "whatever's left" via flex rather than a
+           hardcoded `height: calc(100% - <toolbar height>px)` — the
+           toolbar's actual height isn't a fixed constant: it wraps to a
+           second line on a narrow window or once enough buttons are added,
+           and a stale hardcoded offset silently pushes canvasWrap's box
+           past the bottom of the viewport when that happens. */
+        display: flex;
+        flex-direction: column;
+      }
+      #toolbar {
+        display: flex;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        background: var(--surface-card);
+        border-bottom: var(--border-width) solid var(--border-hairline);
+        align-items: center;
+        flex-wrap: wrap;
+        flex: 0 0 auto;
+      }
+      #toolGroup {
+        display: flex;
+        gap: var(--space-1);
+      }
+      .toolbar-divider {
+        width: var(--border-width);
+        align-self: stretch;
+        background: var(--border-hairline);
+        margin: 0 var(--space-1);
+      }
+      #toolbar .icon-btn.active {
+        background: var(--surface-selected);
+        color: var(--text-brand);
+      }
+      #cropApply,
+      #cropCancel {
+        display: none;
+      }
+      #status {
+        margin-left: auto;
+      }
+      #canvasWrap {
+        overflow: auto;
+        padding: var(--space-6);
+        flex: 1 1 auto;
+        box-sizing: border-box;
+        background: var(--bg-page);
+      }
+      #canvasStack {
+        position: relative;
+      }
+      #canvas {
+        cursor: crosshair;
+        box-shadow: var(--shadow-lg);
+        background: #fff;
+        /* Fit the window's available width instead of always rendering at
+           native pixel size — a retina/high-DPR capture's canvas.width is
+           up to 2-3x its CSS px size on the original page, so without this
+           it displays that much too large. height:auto preserves aspect
+           ratio; margin:auto centers it once it's narrower than the wrap. */
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+      }
+      /* Live drag previews (arrow/rect/blur outline, crop marquee+handles)
+         render here instead of on #canvas — editor.ts positions/sizes this
+         in JS to exactly overlay #canvas's own (possibly scaled, possibly
+         centered) rendered box. Keeping previews off the main canvas means
+         a mousemove during a drag never touches that canvas's pixel data
+         at all (no getImageData/putImageData), which for a large capture
+         was the actual cause of very laggy dragging — a full-canvas pixel
+         copy on every mousemove, regardless of how small the visible
+         preview shape was. */
+      #previewCanvas {
+        position: absolute;
+        pointer-events: none;
+      }
+      #watermarkPanel {
+        position: absolute;
+        top: calc(var(--space-2) + 44px);
+        right: var(--space-4);
+        z-index: 1000;
+        width: 280px;
+        padding: var(--space-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+      }
+      /* The [hidden] attribute's UA-stylesheet `display:none` loses to the
+         `display:flex` above on specificity alone (equal-specificity ID
+         selectors resolve by source order, and [hidden] isn't one) — without
+         this, the panel stays visible and, worse, sits on top of the canvas
+         intercepting its mouse events even while "hidden". This selector's
+         extra [hidden] clause outranks the bare #watermarkPanel one above,
+         so it wins regardless of source order. */
+      #watermarkPanel[hidden] {
+        display: none;
+      }
+      #watermarkLogoRow {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+      }
+      #watermarkLogoPreview {
+        width: 28px;
+        height: 28px;
+        object-fit: contain;
+        border-radius: var(--radius-sm);
+        border: var(--border-width) solid var(--border-hairline);
+        background: var(--bg-subtle);
+      }
+      #watermarkLogoName {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #watermarkActions {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--space-2);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <div id="toolGroup">
+        <button id="toolSelect" class="icon-btn" data-tool="select" title="Select">
+          <span class="oa-icon icon-mouse-pointer-2"></span>
+        </button>
+        <button id="toolCrop" class="icon-btn" data-tool="crop" title="Crop">
+          <span class="oa-icon icon-crop"></span>
+        </button>
+        <button id="toolArrow" class="icon-btn" data-tool="arrow" title="Arrow">
+          <span class="oa-icon icon-arrow-up-right"></span>
+        </button>
+        <button id="toolRect" class="icon-btn" data-tool="rect" title="Rectangle">
+          <span class="oa-icon icon-square"></span>
+        </button>
+        <button id="toolText" class="icon-btn" data-tool="text" title="Text">
+          <span class="oa-icon icon-type"></span>
+        </button>
+        <button id="toolBlur" class="icon-btn" data-tool="blur" title="Blur">
+          <span class="oa-icon icon-grid-2x2"></span>
+        </button>
+        <div class="toolbar-divider"></div>
+        <button id="toolWatermark" class="icon-btn" data-tool="watermark" title="Watermark">
+          <span class="oa-icon icon-image"></span>
+        </button>
+      </div>
+      <button id="cropApply" class="btn btn-primary btn-sm">
+        <span class="oa-icon oa-icon-14 icon-check"></span>
+        Apply crop
+      </button>
+      <button id="cropCancel" class="btn btn-secondary btn-sm">
+        <span class="oa-icon oa-icon-14 icon-x"></span>
+        Cancel
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="undo" class="icon-btn" title="Undo">
+        <span class="oa-icon icon-undo-2"></span>
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="downloadPng" class="btn btn-secondary btn-sm">
+        <span class="oa-icon oa-icon-14 icon-download"></span>
+        PNG
+      </button>
+      <button id="downloadPdf" class="btn btn-secondary btn-sm">
+        <span class="oa-icon oa-icon-14 icon-file-down"></span>
+        PDF
+      </button>
+      <span id="status" class="oa-caption"></span>
+      <button id="closeEditor" type="button" class="icon-btn" title="Close">
+        <span class="oa-icon icon-x"></span>
+      </button>
+    </div>
+    <div id="watermarkPanel" class="card" hidden>
+      <label class="field">
+        <span class="field-label">Watermark text</span>
+        <span class="field-control">
+          <input id="watermarkText" type="text" placeholder="e.g. Draft, Confidential…" />
+        </span>
+      </label>
+      <div class="field">
+        <span class="field-label">Logo image</span>
+        <div id="watermarkLogoRow">
+          <img id="watermarkLogoPreview" alt="" hidden />
+          <span id="watermarkLogoName" class="field-hint">No logo chosen</span>
+          <button id="watermarkChooseLogo" class="btn btn-secondary btn-sm" type="button">
+            <span class="oa-icon oa-icon-14 icon-folder-open"></span>
+            Choose…
+          </button>
+          <button id="watermarkRemoveLogo" class="btn btn-secondary btn-sm" type="button" hidden>Remove</button>
+          <input id="watermarkLogoFile" type="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <label class="field">
+        <span class="field-label">Opacity</span>
+        <input id="watermarkOpacity" type="range" min="10" max="100" value="60" />
+      </label>
+      <div id="watermarkActions">
+        <button id="watermarkCancel" class="btn btn-secondary btn-sm" type="button">Cancel</button>
+        <button id="watermarkAdd" class="btn btn-primary btn-sm" type="button" disabled>Add watermark</button>
+      </div>
+    </div>
+    <div id="canvasWrap">
+      <div id="canvasStack">
+        <canvas id="canvas"></canvas>
+        <canvas id="previewCanvas"></canvas>
+      </div>
+    </div>
+    <script type="module" src="./editor.ts"></script>
+  </body>
+</html>

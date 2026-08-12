@@ -1,0 +1,234 @@
+import { LAST_CAPTURE_BLOB_KEY, getBlob } from "../chrome/blob-store";
+import { copyPngBytesToClipboard } from "../chrome/copy-image";
+import { getSavedDirectoryHandle } from "../chrome/dir-handle-store";
+import { client as openappsClient, ready as openappsReady } from "../chrome/openapps-session";
+import { pickDirectory } from "../chrome/pick-directory";
+import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
+import { ext } from "../platform/webext";
+import type { CaptureReport, PopupRequest, PopupResponse } from "../types";
+
+function $(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing #${id}`);
+  return el;
+}
+
+const statusEl = $("status");
+const reportEl = $("report") as HTMLPreElement;
+const previewEl = $("preview") as HTMLImageElement;
+const exportPdfBtn = $("exportPdf") as HTMLButtonElement;
+const copyBtn = $("copyToClipboard") as HTMLButtonElement;
+const openEditorBtn = $("openEditor") as HTMLButtonElement;
+const allButtons = document.querySelectorAll<HTMLButtonElement>("button");
+const prefFilenameEl = $("prefFilename") as HTMLInputElement;
+const customFolderNameEl = $("customFolderName");
+const browseFolderBtn = $("browseFolder") as HTMLButtonElement;
+
+// showDirectoryPicker() (File System Access API) is Chromium-only — Firefox
+// has no implementation at all, and no equivalent API to fall back to.
+// Hide the button entirely rather than showing something that can only
+// error; Firefox users keep the standard Downloads-folder save, same
+// fallback Chrome itself uses when this API/permission isn't available.
+const supportsFolderPicker = "showDirectoryPicker" in window;
+if (!supportsFolderPicker) {
+  browseFolderBtn.style.display = "none";
+}
+
+// Persist on every change (no explicit "Save" button — the popup is
+// transient and can close at any moment, e.g. losing focus mid-edit, so
+// there's no safe later point to defer saving to).
+async function loadSavePrefs(): Promise<void> {
+  const prefs = await getSavePrefs();
+  prefFilenameEl.placeholder = prefs.filename;
+  prefFilenameEl.value = prefs.filename === "opencapture" ? "" : prefs.filename;
+}
+
+async function persistSavePrefs(): Promise<void> {
+  await setSavePrefs({
+    folder: "",
+    filename: prefFilenameEl.value.trim() || "opencapture",
+  });
+}
+
+prefFilenameEl.addEventListener("change", persistSavePrefs);
+loadSavePrefs();
+
+async function refreshCustomFolder(): Promise<void> {
+  const handle = await getSavedDirectoryHandle();
+  customFolderNameEl.textContent = handle ? handle.name : "Your Downloads folder (default)";
+}
+
+// Single place that writes to #status, so error styling (a red status
+// line) can't drift out of sync with the text — every other call site goes
+// through this instead of touching statusEl directly.
+function setStatusText(text: string, isError = false): void {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("is-error", isError);
+}
+
+browseFolderBtn.addEventListener("click", async () => {
+  const result = await pickDirectory();
+  if (result.ok) {
+    setStatusText(`Now saving to "${result.name}".`);
+  } else if (!result.cancelled) {
+    setStatusText(`Couldn't set that folder: ${result.error}`, true);
+  }
+  await refreshCustomFolder();
+});
+
+refreshCustomFolder();
+
+// MV3 popups are fully torn down and recreated every time they close — all
+// in-memory JS state (the report, preview, which buttons are enabled) is
+// lost, even though the underlying capture is still very much there
+// (background/index.ts's orchestrator state, and the image bytes in
+// blob-store under LAST_CAPTURE_BLOB_KEY, both survive independently of
+// this popup's lifetime). This persists just the small bits needed to
+// redraw the same "last capture" UI on next open — the image itself is
+// re-read from blob-store rather than duplicated here, since a capture's
+// PNG can be far too large for chrome.storage.local's 10MB default quota.
+const LAST_CAPTURE_UI_KEY = "lastCaptureUi";
+
+interface LastCaptureUi {
+  report: CaptureReport;
+  openedEditor: boolean;
+}
+
+async function persistLastCaptureUi(ui: LastCaptureUi): Promise<void> {
+  await ext.storage.local.set({ [LAST_CAPTURE_UI_KEY]: ui });
+}
+
+function captureStatusText(ui: LastCaptureUi): string {
+  return ui.openedEditor
+    ? "Opened in editor — crop, annotate, then choose PNG or PDF to save."
+    : `Done — downloaded ${ui.report.output_image_count} PNG file(s) (page too long for one image; use "Export as PDF" for a single file).`;
+}
+
+async function restoreLastCaptureUi(): Promise<void> {
+  const stored = await ext.storage.local.get(LAST_CAPTURE_UI_KEY);
+  const ui = stored[LAST_CAPTURE_UI_KEY] as LastCaptureUi | undefined;
+  if (!ui) return;
+
+  reportEl.style.display = "block";
+  reportEl.textContent = JSON.stringify(ui.report, null, 2);
+
+  const bytes = await getBlob(LAST_CAPTURE_BLOB_KEY);
+  if (bytes) {
+    previewEl.style.display = "block";
+    previewEl.src = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "image/png" }));
+  }
+
+  exportPdfBtn.disabled = false;
+  copyBtn.disabled = false;
+  openEditorBtn.disabled = false;
+  setStatusText(captureStatusText(ui));
+}
+
+restoreLastCaptureUi();
+
+// Only writes #status when going busy — the caller already left the right
+// final text (and error styling, if any) in place before calling
+// setBusy(false), so re-stamping it here would just risk clobbering that.
+function setBusy(busy: boolean, busyMessage?: string): void {
+  if (busy && busyMessage !== undefined) setStatusText(busyMessage);
+  allButtons.forEach((b) => (b.disabled = busy));
+  if (!busy) {
+    exportPdfBtn.disabled = false;
+    copyBtn.disabled = false;
+    openEditorBtn.disabled = false;
+  }
+}
+
+async function send(request: PopupRequest): Promise<PopupResponse> {
+  return ext.runtime.sendMessage(request);
+}
+
+async function showCaptureResult(response: PopupResponse): Promise<void> {
+  if (!response.ok) {
+    setStatusText(`Error: ${response.error}`, true);
+    return;
+  }
+  if ("cancelled" in response) {
+    // Deliberately doesn't touch reportEl/previewEl/persisted state — a
+    // cancelled selection leaves whatever the previous capture's state
+    // was fully intact, exactly like an error does.
+    setStatusText("Selection cancelled.");
+    return;
+  }
+  if ("report" in response) {
+    reportEl.style.display = "block";
+    reportEl.textContent = JSON.stringify(response.report, null, 2);
+    if (response.pngDataUrls[0]) {
+      previewEl.style.display = "block";
+      previewEl.src = response.pngDataUrls[0];
+    }
+    const ui: LastCaptureUi = { report: response.report, openedEditor: response.openedEditor };
+    setStatusText(captureStatusText(ui));
+    // Awaited (not fire-and-forget) so the write is actually issued before
+    // runCapture's finally block returns — the popup can close the moment
+    // the user clicks away, and a dropped write here would silently
+    // recreate the exact bug this feature exists to fix.
+    await persistLastCaptureUi(ui);
+  } else {
+    setStatusText("Done.");
+  }
+}
+
+async function runCapture(request: PopupRequest, busyMessage: string): Promise<void> {
+  setBusy(true, busyMessage);
+  try {
+    const response = await send(request);
+    await showCaptureResult(response);
+  } catch (err) {
+    setStatusText(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+$("captureFullPage").addEventListener("click", () => runCapture({ action: "captureFullPage" }, "Capturing full page…"));
+$("captureVisible").addEventListener("click", () => runCapture({ action: "captureVisible" }, "Capturing visible area…"));
+$("captureSelectedArea").addEventListener("click", () =>
+  runCapture({ action: "captureSelectedArea" }, "Drag to select an area on the page…"),
+);
+exportPdfBtn.addEventListener("click", () => runCapture({ action: "exportPdf" }, "Exporting PDF…"));
+openEditorBtn.addEventListener("click", () => runCapture({ action: "openEditor" }, "Opening editor…"));
+
+// Deliberately NOT routed through background/index.ts's message handler —
+// the clipboard write has to happen in *this* document, the one that
+// actually received the real click, or it can't work at all. See
+// chrome/copy-image.ts.
+copyBtn.addEventListener("click", async () => {
+  setBusy(true, "Copying to clipboard…");
+  try {
+    const bytes = await getBlob(LAST_CAPTURE_BLOB_KEY);
+    if (!bytes) throw new Error("No capture to copy yet — capture a page first.");
+    await copyPngBytesToClipboard(bytes);
+    setStatusText("Copied to clipboard.");
+  } catch (err) {
+    setStatusText(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
+  } finally {
+    setBusy(false);
+  }
+});
+
+// Account status: the only part of this popup that talks to a server.
+// Always opens account.html in its own tab, whether the user is signed in
+// or not — the popup closes the instant it loses focus, so it can't host
+// a real sign-in redirect or a checkout flow itself (same reason the
+// capture buttons above route "Annotate" to a separate editor tab).
+$("openAccount").addEventListener("click", () => {
+  ext.tabs.create({ url: ext.runtime.getURL("account.html") });
+});
+
+(async () => {
+  await openappsReady;
+  const label = $("accountLabel");
+  if (!openappsClient.isLoggedIn) return; // already showing "Sign in"
+  try {
+    const balance = await openappsClient.credits.balance();
+    label.textContent = `${balance.toLocaleString()} credits`;
+  } catch {
+    label.textContent = "Account";
+  }
+})();

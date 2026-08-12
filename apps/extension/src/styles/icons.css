@@ -1,0 +1,24 @@
+/* Lucide glyphs, vendored locally (src/assets/icons/) — MV3 blocks the CDN
+   these normally load from. One class per glyph, each just pointing
+   --icon-src at the vendored file so Vite's asset pipeline can fingerprint
+   it like any other url(); .oa-icon (styles.css) does the actual masking,
+   which is what lets an icon inherit currentColor instead of being stuck
+   at whatever stroke color the SVG file itself has. */
+.icon-camera{--icon-src:url("../assets/icons/camera.svg")}
+.icon-image{--icon-src:url("../assets/icons/image.svg")}
+.icon-crop{--icon-src:url("../assets/icons/crop.svg")}
+.icon-mouse-pointer-2{--icon-src:url("../assets/icons/mouse-pointer-2.svg")}
+.icon-file-down{--icon-src:url("../assets/icons/file-down.svg")}
+.icon-copy{--icon-src:url("../assets/icons/copy.svg")}
+.icon-pen-line{--icon-src:url("../assets/icons/pen-line.svg")}
+.icon-folder-open{--icon-src:url("../assets/icons/folder-open.svg")}
+.icon-check{--icon-src:url("../assets/icons/check.svg")}
+.icon-circle-alert{--icon-src:url("../assets/icons/circle-alert.svg")}
+.icon-arrow-up-right{--icon-src:url("../assets/icons/arrow-up-right.svg")}
+.icon-square{--icon-src:url("../assets/icons/square.svg")}
+.icon-type{--icon-src:url("../assets/icons/type.svg")}
+.icon-grid-2x2{--icon-src:url("../assets/icons/grid-2x2.svg")}
+.icon-undo-2{--icon-src:url("../assets/icons/undo-2.svg")}
+.icon-download{--icon-src:url("../assets/icons/download.svg")}
+.icon-x{--icon-src:url("../assets/icons/x.svg")}
+.icon-loader-circle{--icon-src:url("../assets/icons/loader-circle.svg")}

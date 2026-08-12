@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # Must match the `wasm-bindgen = "=X.Y.Z"` pin in Cargo.toml exactly — the
+  # CLI and crate versions are schema-coupled (see PLAN.md's build notes).
+  WASM_BINDGEN_VERSION: "0.2.100"
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  wasm-build:
+    name: wasm build + extension typecheck/build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (pinned)
+        run: cargo install wasm-bindgen-cli --version ${{ env.WASM_BINDGEN_VERSION }} --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/extension/package-lock.json
+      - run: npm ci
+        working-directory: apps/extension
+      - run: npm run typecheck
+        working-directory: apps/extension
+      - run: npm test
+        working-directory: apps/extension
+      - run: npm run build
+        working-directory: apps/extension
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist
+          path: apps/extension/dist
+
+  e2e:
+    name: playwright e2e (real headless Chrome)
+    runs-on: ubuntu-latest
+    needs: wasm-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (pinned)
+        run: cargo install wasm-bindgen-cli --version ${{ env.WASM_BINDGEN_VERSION }} --locked
+      - name: Build shot-qa (used by e2e assertions)
+        run: cargo build -p shot-qa
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/extension/package-lock.json
+      - run: npm ci
+        working-directory: apps/extension
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/extension
+      - name: Build extension (E2E test hook enabled)
+        run: OPENCAPTURE_E2E=1 npm run build
+        working-directory: apps/extension
+      - name: Run e2e suite
+        run: npx playwright test
+        working-directory: apps/extension
+        env:
+          SHOT_QA_BIN: ${{ github.workspace }}/target/debug/shot-qa
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/extension/playwright-report
+          retention-days: 7

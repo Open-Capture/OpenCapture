@@ -1,0 +1,94 @@
+// Shared across background/popup only (never imported by content/index.ts,
+// which must stay import-free — see its module doc). `import type` uses
+// here are erased at compile time regardless, but non-content files may
+// also import the runtime `Msg` helpers below.
+
+export interface PageMetrics {
+  viewportWidthCss: number;
+  viewportHeightCss: number;
+  totalHeightCss: number;
+  dpr: number;
+}
+
+export interface CaptureReport {
+  css_width: number;
+  css_height: number;
+  dpr: number;
+  slice_count: number;
+  output_width_px: number;
+  output_height_px: number;
+  output_image_count: number;
+  lazy_images_forced: number;
+  pinned_elements_handled: number;
+  aborted: boolean;
+  warnings: string[];
+}
+
+export type ContentRequest =
+  | { action: "prep" }
+  | { action: "scrollTo"; targetCss: number }
+  | { action: "restore" }
+  | { action: "selectArea" };
+
+export interface PrepResponse {
+  metrics: PageMetrics;
+  pinnedElementsHandled: number;
+  lazyImagesForced: number;
+  warnings: string[];
+}
+
+export interface ScrollToResponse {
+  actualScrollCss: number;
+}
+
+export interface RestoreResponse {
+  ok: true;
+}
+
+export interface SelectedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SelectAreaResponse {
+  rect: SelectedRect | null;
+  dpr: number;
+}
+
+export type ContentResponse = PrepResponse | ScrollToResponse | RestoreResponse | SelectAreaResponse;
+
+export type PopupRequest =
+  | { action: "captureFullPage" }
+  | { action: "captureVisible" }
+  | { action: "captureSelectedArea" }
+  | { action: "exportPdf" }
+  | { action: "openEditor" };
+
+export interface CaptureResult {
+  ok: true;
+  report: CaptureReport;
+  pngDataUrls: string[];
+  // True when the capture produced exactly one image and was routed to the
+  // editor for crop/annotate/format review instead of being downloaded
+  // immediately. False for the (rare, very-long-page) multi-image PNG case,
+  // which still auto-downloads every part — see background/index.ts.
+  openedEditor: boolean;
+}
+
+export interface AckResult {
+  ok: true;
+}
+
+export interface CancelledResult {
+  ok: true;
+  cancelled: true;
+}
+
+export interface CaptureFailure {
+  ok: false;
+  error: string;
+}
+
+export type PopupResponse = CaptureResult | AckResult | CancelledResult | CaptureFailure;

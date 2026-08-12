@@ -1,0 +1,20 @@
+[package]
+name = "shot-qa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "shot-qa"
+path = "src/main.rs"
+
+[dependencies]
+shot-core = { workspace = true }
+png = { workspace = true }
+lopdf = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+clap = { workspace = true }
