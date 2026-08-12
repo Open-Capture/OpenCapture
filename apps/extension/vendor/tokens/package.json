@@ -1,0 +1,15 @@
+{
+  "name": "@openapps/tokens",
+  "version": "0.1.0",
+  "description": "OpenApps design tokens: colour, type, spacing, geometry and the subsetted Geist faces. CSS custom properties only — no components, no framework.",
+  "license": "MIT OR Apache-2.0",
+  "sideEffects": ["*.css"],
+  "files": ["css", "fonts", "tokens.css", "styles.css", "README.md"],
+  "exports": {
+    ".": "./tokens.css",
+    "./tokens.css": "./tokens.css",
+    "./styles.css": "./styles.css",
+    "./css/*": "./css/*",
+    "./fonts/*": "./fonts/*"
+  }
+}

@@ -1,0 +1,11 @@
+/* Tokens plus the base layer: resets and element defaults.
+ *
+ * This one *does* style the document — `body`, headings, links, lists, focus
+ * rings — so link it only on a page OpenApps owns end to end: its own hosted
+ * account pages, the workspace shell, the marketing site.
+ *
+ * Embedding a panel into somebody else's app? Link ./tokens.css instead, or
+ * you will restyle their application around your card.
+ */
+@import url("./tokens.css");
+@import url("./css/base.css");

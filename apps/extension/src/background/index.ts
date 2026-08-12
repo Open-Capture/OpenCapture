@@ -10,6 +10,7 @@ import {
   exportLastCaptureAsPdf,
   getLastCaptureDpr,
   getLastCaptureFirstImage,
+  getLastCaptureImageCount,
   testScrollTargets,
 } from "./orchestrator";
 
@@ -44,9 +45,17 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
 // opening its own IndexedDB connection, since that connection would run
 // inside the editor tab's own (possibly private) document. See
 // EDITOR_IMAGE_PORT_NAME's comment in blob-store.ts for why that matters.
-async function openEditorWithBytes(bytes: Uint8Array, dpr: number): Promise<number | undefined> {
+// imageCount defaults to 1: every call site except "openEditor" below
+// captures fresh, and captureFullPage only ever calls this for its own
+// images.length === 1 branch — so 1 is correct there, not a placeholder.
+// "openEditor" reopens the *last* capture, which could have been a
+// multi-image split even though it only ever hands over the first image
+// (see getLastCaptureFirstImage's own comment) — that's the one case that
+// needs the real count, so the editor can say so instead of silently
+// showing a partial page.
+async function openEditorWithBytes(bytes: Uint8Array, dpr: number, imageCount = 1): Promise<number | undefined> {
   await putBlob(EDITOR_IMAGE_BLOB_KEY, bytes);
-  await ext.storage.session.set({ editorDpr: dpr });
+  await ext.storage.session.set({ editorDpr: dpr, editorImageCount: imageCount });
   const tab = await ext.tabs.create({ url: ext.runtime.getURL("editor.html") });
   return tab.id;
 }
@@ -136,8 +145,8 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       return { ok: true };
     }
     case "openEditor": {
-      const [bytes, dpr] = await Promise.all([getLastCaptureFirstImage(), getLastCaptureDpr()]);
-      await openEditorWithBytes(bytes, dpr);
+      const [bytes, dpr, imageCount] = await Promise.all([getLastCaptureFirstImage(), getLastCaptureDpr(), getLastCaptureImageCount()]);
+      await openEditorWithBytes(bytes, dpr, imageCount);
       return { ok: true };
     }
     default: {
@@ -213,8 +222,8 @@ if (__OPENCAPTURE_E2E__) {
     exportLastCaptureAsPdf: async () => bytesToBase64(await exportLastCaptureAsPdf()),
     scrollTargets: testScrollTargets,
     openEditor: async () => {
-      const [bytes, dpr] = await Promise.all([getLastCaptureFirstImage(), getLastCaptureDpr()]);
-      return openEditorWithBytes(bytes, dpr);
+      const [bytes, dpr, imageCount] = await Promise.all([getLastCaptureFirstImage(), getLastCaptureDpr(), getLastCaptureImageCount()]);
+      return openEditorWithBytes(bytes, dpr, imageCount);
     },
     // Unlike the hooks above (which call orchestrator functions directly,
     // bypassing the popup-message plumbing entirely), this calls the exact

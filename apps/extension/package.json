@@ -2,6 +2,7 @@
   "name": "@opencapture/extension",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
@@ -14,9 +15,11 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@openapps/sdk": "file:../../../sdk/ts",
-    "@openapps/tokens": "file:../../../tokens",
-    "@openapps/ui": "file:../../../ui-elements"
+    "@openapps/sdk": "file:./vendor/sdk",
+    "@openapps/tokens": "file:./vendor/tokens",
+    "@openapps/ui": "file:./vendor/ui",
+    "lit": "^3.3.0",
+    "nostr-tools": "^2.24.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

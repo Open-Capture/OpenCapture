@@ -8,8 +8,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/openapps/opencapture"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Open-Capture/OpenCapture"
 
 [workspace.dependencies]
 # --- internal crates ---

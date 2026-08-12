@@ -98,6 +98,24 @@
         flex-direction: column;
         gap: var(--space-3);
       }
+      /* Visibility toggled by a class, not the [hidden] attribute — a
+         previous version of this file gave #watermarkPanel an unconditional
+         display:flex whose specificity silently beat [hidden]'s
+         display:none, leaving that panel visible (and eating clicks meant
+         for the canvas) the whole time. Not repeating that here. */
+      #splitNotice {
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-3);
+        padding: var(--space-2) var(--space-4);
+        background: var(--surface-selected);
+        border-bottom: var(--border-width) solid var(--border-hairline);
+        font-size: 13px;
+      }
+      #splitNotice.visible {
+        display: flex;
+      }
       /* The [hidden] attribute's UA-stylesheet `display:none` loses to the
          `display:flex` above on specificity alone (equal-specificity ID
          selectors resolve by source order, and [hidden] isn't one) — without
@@ -132,6 +150,20 @@
         display: flex;
         justify-content: flex-end;
         gap: var(--space-2);
+      }
+      .field-label-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--space-2);
+      }
+      #watermarkPreview {
+        display: block;
+        width: 100%;
+        height: 160px;
+        background: var(--bg-subtle);
+        border: var(--border-width) solid var(--border-hairline);
+        border-radius: var(--radius-sm);
       }
     </style>
   </head>
@@ -187,7 +219,17 @@
         <span class="oa-icon icon-x"></span>
       </button>
     </div>
+    <div id="splitNotice">
+      <span id="splitNoticeText"></span>
+      <button id="splitNoticeClose" type="button" class="icon-btn" title="Dismiss">
+        <span class="oa-icon oa-icon-14 icon-x"></span>
+      </button>
+    </div>
     <div id="watermarkPanel" class="card" hidden>
+      <div class="field">
+        <span class="field-label">Preview</span>
+        <canvas id="watermarkPreview" width="248" height="160"></canvas>
+      </div>
       <label class="field">
         <span class="field-label">Watermark text</span>
         <span class="field-control">
@@ -208,8 +250,38 @@
         </div>
       </div>
       <label class="field">
-        <span class="field-label">Opacity</span>
-        <input id="watermarkOpacity" type="range" min="10" max="100" value="60" />
+        <span class="field-label-row">
+          <span class="field-label">Text size</span>
+          <span id="watermarkTextSizeValue" class="field-hint">100%</span>
+        </span>
+        <input id="watermarkTextSize" type="range" min="50" max="200" value="100" />
+      </label>
+      <label class="field">
+        <span class="field-label-row">
+          <span class="field-label">Opacity</span>
+          <span id="watermarkOpacityValue" class="field-hint">15%</span>
+        </span>
+        <input id="watermarkOpacity" type="range" min="10" max="100" value="15" />
+      </label>
+      <label class="field">
+        <span class="field-label">Location</span>
+        <span class="field-control">
+          <select id="watermarkLocation">
+            <option value="full">Over the entire page</option>
+            <option value="top">Top only</option>
+            <option value="bottom">Bottom only</option>
+            <option value="top-bottom">Top and bottom</option>
+          </select>
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">Orientation</span>
+        <span class="field-control">
+          <select id="watermarkOrientation">
+            <option value="0">0°</option>
+            <option value="45">45° (slanted)</option>
+          </select>
+        </span>
       </label>
       <div id="watermarkActions">
         <button id="watermarkCancel" class="btn btn-secondary btn-sm" type="button">Cancel</button>

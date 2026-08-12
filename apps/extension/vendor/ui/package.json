@@ -1,0 +1,47 @@
+{
+  "name": "@openapps/ui",
+  "version": "0.1.0",
+  "description": "Drop-in web components for OpenApps: <openapps-login>, <openapps-buy>, <openapps-credits>.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "sideEffects": [
+    "./dist/openapps-*.js",
+    "./dist/index.js"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./bundle": "./dist/bundle/openapps-ui.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build-bundle.mjs",
+    "bundle": "node build-bundle.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "lit": "^3.3.0",
+    "nostr-tools": "^2.24.1"
+  },
+  "peerDependencies": {
+    "@openapps/sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "@openapps/sdk": "file:../sdk/ts",
+    "esbuild": "^0.28.1",
+    "happy-dom": "^20.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

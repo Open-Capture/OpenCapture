@@ -1,0 +1,52 @@
+/* Platform foundations — one system, five surfaces:
+   local app, web app, mobile app, browser extension, embedded account SDK.
+   Everything here is geometry. Colour, type and motion never change per platform. */
+:root{
+  /* ---- Touch ----
+     44px is the floor for anything tappable. Never ship a smaller hit target. */
+  --touch-min:44px;
+  --control-h-touch-sm:40px;
+  --control-h-touch-md:48px;
+  --control-h-touch-lg:56px;
+
+  /* ---- Mobile layout ---- */
+  --mobile-gutter:16px;
+  --navbar-h:52px;
+  --tabbar-h:56px;
+  --safe-top:env(safe-area-inset-top,0px);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+  --sheet-radius:var(--radius-2xl);
+  --list-row-h:52px;
+
+  /* ---- Local (desktop) app window ---- */
+  --titlebar-h:38px;
+  --window-min-w:880px;
+  --window-min-h:560px;
+  --window-radius:10px;
+
+  /* ---- Embedded SDK ----
+     The account/credits surfaces render inside a host app, so they size to a card,
+     not a page. --sdk-max is the widest an embedded panel ever gets. */
+  --sdk-max:420px;
+  --sdk-wide:560px;
+
+  /* ---- Breakpoints ----
+     Declared for reference; media queries must use the literal px values. */
+  --bp-sm:600px;
+  --bp-md:900px;
+  --bp-lg:1200px;
+  --bp-xl:1440px;
+}
+
+/* Touch devices get bigger controls and one step more text, automatically.
+   Every component reads --control-h-*, so nothing needs a mobile variant. */
+@media (pointer:coarse){
+  :root{
+    --control-h-sm:var(--control-h-touch-sm);
+    --control-h-md:var(--control-h-touch-md);
+    --control-h-lg:var(--control-h-touch-lg);
+    --text-xs:13px;
+    --text-sm:14px;
+    --list-row-h:56px;
+  }
+}

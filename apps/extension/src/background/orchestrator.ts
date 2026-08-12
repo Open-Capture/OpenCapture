@@ -161,6 +161,18 @@ export async function getLastCaptureDpr(): Promise<number> {
   return meta.dpr;
 }
 
+// getLastCaptureFirstImage() only ever returns the first of a capture's
+// output images — for a page tall/large enough to have split into more
+// than one (see plan.rs's MAX_CANVAS_AREA_PX), the editor showing just
+// that first image with no indication it's partial reads as data loss
+// rather than the deliberate "cropping across a split boundary isn't
+// well-defined" tradeoff it actually is. background/index.ts uses this to
+// tell the editor which case it's in.
+export async function getLastCaptureImageCount(): Promise<number> {
+  const meta = await getLastCaptureMeta();
+  return meta.imageCount;
+}
+
 // Exercises the wasm module without needing a real tab — used by the E2E
 // "extension loads" smoke test (see background/index.ts's __test hook).
 export async function testScrollTargets(totalHeightCss: number, viewportHeightCss: number): Promise<number[]> {

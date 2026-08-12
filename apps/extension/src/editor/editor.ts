@@ -53,7 +53,16 @@ let currentDpr = 1;
 // regardless of how small the shape actually was. "region" captures just
 // the bounding box commitPendingShape() is about to touch — see
 // shapeBoundingBox() below.
-type Snapshot = { kind: "full"; width: number; height: number; data: ImageData } | { kind: "region"; x: number; y: number; data: ImageData };
+// "regions" (plural): a watermark pattern can touch more than one
+// disjoint area in a single action (top AND bottom, say) — snapshotting
+// their bounding box would cover everything in between too, which for a
+// tall page is the same full-canvas cost region snapshots exist to avoid.
+// A list of independent regions restores together as one undo step
+// instead.
+type Snapshot =
+  | { kind: "full"; width: number; height: number; data: ImageData }
+  | { kind: "region"; x: number; y: number; data: ImageData }
+  | { kind: "regions"; regions: { x: number; y: number; data: ImageData }[] };
 
 const undoStack: Snapshot[] = [];
 const MAX_HISTORY = 20;
@@ -127,8 +136,10 @@ function undo(): void {
     canvas.height = prev.height;
     ctx.putImageData(prev.data, 0, 0);
     syncPreviewCanvas(); // canvas dimensions may have just changed (undoing a crop)
-  } else {
+  } else if (prev.kind === "region") {
     ctx.putImageData(prev.data, prev.x, prev.y);
+  } else {
+    for (const region of prev.regions) ctx.putImageData(region.data, region.x, region.y);
   }
 }
 
@@ -540,12 +551,16 @@ function pixelateRegion(x: number, y: number, width: number, height: number): vo
 // one-thing-at-a-time tradeoff the crop marquee above already makes, in
 // exchange for a much simpler mental model than a full layer stack.
 
+// Watermark used to be a kind here (a single draggable/resizable
+// instance), but it now stamps a whole tiled pattern across one or more
+// regions of the page — there's nothing sensible to "drag" once it can
+// cover the entire capture, so it commits directly instead. See
+// applyWatermarkPattern() and its own comment.
 type PendingShape =
   | { kind: "arrow"; x0: number; y0: number; x1: number; y1: number }
   | { kind: "rect"; rect: Rect }
   | { kind: "blur"; rect: Rect }
-  | { kind: "text"; rect: Rect; value: string; fontSizeBuffer: number }
-  | { kind: "watermark"; rect: Rect; text: string; logoBitmap: ImageBitmap | null; opacity: number };
+  | { kind: "text"; rect: Rect; value: string; fontSizeBuffer: number };
 
 type ArrowHandle = "start" | "end";
 type ShapeDrawKind = "arrow" | "rect" | "blur";
@@ -603,14 +618,17 @@ function drawTextShape(target: CanvasRenderingContext2D, shape: { rect: Rect; va
   target.fillText(shape.value, shape.rect.x, shape.rect.y);
 }
 
-/** Logo (if any) fills the top of the box preserving its own aspect ratio;
- * text (if any) sits below it, or centered alone if there's no logo.
- * White fill with a black stroke rather than a single solid color, since a
- * watermark has to stay legible over whatever's underneath it — a capture
- * can be light or dark at that exact spot and there's no way to know which
- * in advance. */
-function drawWatermark(target: CanvasRenderingContext2D, shape: Extract<PendingShape, { kind: "watermark" }>): void {
-  const { rect, text, logoBitmap, opacity } = shape;
+type WatermarkLocation = "top" | "bottom" | "top-bottom" | "full";
+
+/** One instance into a given (unrotated) box: logo (if any) fills the top
+ * preserving its own aspect ratio, text (if any) sits below it, or
+ * centered alone if there's no logo. White fill with a black stroke
+ * rather than a single solid color, since a watermark has to stay legible
+ * over whatever's underneath it — a capture can be light or dark at that
+ * exact spot and there's no way to know which in advance. `textScale`
+ * multiplies the otherwise-automatic font size, so the user can size text
+ * up or down without fighting the box-fitting logic below. */
+function drawWatermarkCell(target: CanvasRenderingContext2D, rect: Rect, text: string, logoBitmap: ImageBitmap | null, opacity: number, textScale: number): void {
   target.save();
   target.globalAlpha = opacity;
   const logoAreaHeight = logoBitmap && text ? rect.height * 0.6 : rect.height;
@@ -624,7 +642,7 @@ function drawWatermark(target: CanvasRenderingContext2D, shape: Extract<PendingS
   }
   if (text) {
     const textAreaHeight = rect.y + rect.height - textTop;
-    const fontSize = Math.max(10, Math.min(textAreaHeight * 0.7, (rect.width / Math.max(1, text.length)) * 1.7));
+    const fontSize = Math.max(10, Math.min(textAreaHeight * 0.7, (rect.width / Math.max(1, text.length)) * 1.7)) * textScale;
     target.font = `${fontSize}px system-ui, sans-serif`;
     target.textAlign = "center";
     target.textBaseline = "middle";
@@ -637,6 +655,83 @@ function drawWatermark(target: CanvasRenderingContext2D, shape: Extract<PendingS
     target.fillText(text, tx, ty);
   }
   target.restore();
+}
+
+/** One tile's box size, proportional to the capture's own width so it
+ * reads consistently regardless of resolution. Shared by watermarkBands()
+ * (band height = one row's worth) and drawWatermarkTile() (grid spacing),
+ * so the two stay in lockstep by construction. */
+function watermarkCellSize(): { width: number; height: number } {
+  const width = Math.max(40, Math.round(canvas.width * 0.16));
+  const height = Math.max(24, Math.round(width * 0.5));
+  return { width, height };
+}
+
+/** Which band(s) of the canvas a watermark pattern covers, in
+ * canvas-buffer coordinates. "full" tiles the whole page (many rows);
+ * "top"/"bottom"/"top-bottom" are each sized to exactly one tile's
+ * height, so they read as a single line of repeated watermarks at that
+ * edge rather than a filled strip — "top and bottom" is one row at the
+ * very top plus one independent row at the very bottom, never a block of
+ * several rows at each end. */
+function watermarkBands(location: WatermarkLocation): Rect[] {
+  if (location === "full") return [{ x: 0, y: 0, width: canvas.width, height: canvas.height }];
+  const cell = watermarkCellSize();
+  if (location === "top") return [{ x: 0, y: 0, width: canvas.width, height: Math.min(cell.height, canvas.height) }];
+  if (location === "bottom") {
+    const height = Math.min(cell.height, canvas.height);
+    return [{ x: 0, y: canvas.height - height, width: canvas.width, height }];
+  }
+  // top-bottom: two independent single-row bands, never touching even on
+  // an unusually short capture.
+  const height = Math.min(cell.height, Math.floor(canvas.height / 2));
+  return [
+    { x: 0, y: 0, width: canvas.width, height },
+    { x: 0, y: canvas.height - height, width: canvas.width, height },
+  ];
+}
+
+/** Repeats one watermark cell in a grid across `band`, each instance
+ * rotated in place around its own center rather than the band being
+ * rotated as a whole — this is what keeps the tiling grid itself
+ * axis-aligned (so it reliably covers corners and edges) while the
+ * *content* reads as a diagonal stamp, matching how tiled watermarks
+ * ordinarily look. Negative rotation for a "rising" bottom-left-to-
+ * top-right diagonal, the conventional direction. */
+function drawWatermarkTile(target: CanvasRenderingContext2D, band: Rect, text: string, logoBitmap: ImageBitmap | null, opacity: number, orientationDeg: 0 | 45, textScale: number): void {
+  const cell = watermarkCellSize();
+  const gapX = cell.width * 0.5;
+  const gapY = cell.height * 0.5;
+  const strideX = cell.width + gapX;
+  const strideY = cell.height + gapY;
+  const cols = Math.max(1, Math.ceil(band.width / strideX));
+  const rows = Math.max(1, Math.ceil(band.height / strideY));
+  const angle = (-orientationDeg * Math.PI) / 180;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cx = band.x + gapX / 2 + col * strideX + cell.width / 2;
+      const cy = band.y + gapY / 2 + row * strideY + cell.height / 2;
+      target.save();
+      target.translate(cx, cy);
+      if (angle) target.rotate(angle);
+      drawWatermarkCell(target, { x: -cell.width / 2, y: -cell.height / 2, width: cell.width, height: cell.height }, text, logoBitmap, opacity, textScale);
+      target.restore();
+    }
+  }
+}
+
+/** The watermark tool's whole effect: bakes a tiled pattern directly into
+ * `ctx` across one or more bands, no adjustable pending-shape stage first.
+ * Unlike arrow/rect/text/blur, a pattern that can span the entire capture
+ * has nothing sensible left to drag — the old single-instance,
+ * corner-placed, resizable version this replaced only ever made sense
+ * because it covered a small fixed area. */
+function applyWatermarkPattern(location: WatermarkLocation, orientationDeg: 0 | 45, text: string, logoBitmap: ImageBitmap | null, opacity: number, textScale: number): void {
+  const bands = watermarkBands(location);
+  const regions = bands.map((band) => ({ x: band.x, y: band.y, data: ctx.getImageData(band.x, band.y, band.width, band.height) }));
+  undoStack.push({ kind: "regions", regions });
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+  for (const band of bands) drawWatermarkTile(ctx, band, text, logoBitmap, opacity, orientationDeg, textScale);
 }
 
 // The pending shape (and its handles) draws on previewCanvas, never on
@@ -659,9 +754,6 @@ function renderPendingShape(): void {
     const r = pendingShape.rect;
     drawCropPreview(previewCtx, r.x, r.y, r.x + r.width, r.y + r.height);
     drawCropHandles(previewCtx, r);
-  } else if (pendingShape.kind === "watermark") {
-    drawWatermark(previewCtx, pendingShape);
-    drawCropHandles(previewCtx, pendingShape.rect);
   } else {
     drawTextShape(previewCtx, pendingShape);
     drawCropHandles(previewCtx, pendingShape.rect);
@@ -717,8 +809,6 @@ function commitPendingShape(): void {
   } else if (pendingShape.kind === "blur") {
     const r = pendingShape.rect;
     pixelateRegion(r.x, r.y, r.width, r.height);
-  } else if (pendingShape.kind === "watermark") {
-    drawWatermark(ctx, pendingShape);
   } else {
     drawTextShape(ctx, pendingShape);
   }
@@ -761,7 +851,6 @@ function updateShapeDrag(p: { x: number; y: number }): void {
     if (!newRect) return;
     if (pendingShape.kind === "rect") pendingShape = { kind: "rect", rect: newRect };
     else if (pendingShape.kind === "blur") pendingShape = { kind: "blur", rect: newRect };
-    else if (pendingShape.kind === "watermark") pendingShape = { ...pendingShape, rect: newRect };
     else if (pendingShape.kind === "text" && shapeDragOrig.kind === "text") {
       // Resizing a text box scales its font size with the box height —
       // there's no sensible "reflow" for a single line of canvas text, so
@@ -973,16 +1062,23 @@ function startTextInput(
 //
 // Unlike the other tools, watermark has no drawing gesture of its own —
 // there's nothing to click-and-drag on the canvas to define it, just
-// configuration (text and/or a logo, how see-through it is). So the
-// toolbar button opens this panel directly instead of switching into a
-// persistent "watermark mode", and confirming it places the result at a
-// default corner position, already adjustable via the Select tool exactly
-// like any other pending shape — see the click wiring at the bottom of
-// this section.
+// configuration (text and/or a logo, how see-through it is, where the
+// tiled pattern goes and at what angle). So the toolbar button opens
+// this panel directly instead of switching into a persistent "watermark
+// mode", and confirming it bakes the whole pattern straight into the
+// canvas — see applyWatermarkPattern() and the click wiring at the
+// bottom of this section.
 
 const watermarkPanel = document.getElementById("watermarkPanel")!;
+const watermarkPreviewEl = document.getElementById("watermarkPreview") as HTMLCanvasElement;
+const watermarkPreviewCtx = watermarkPreviewEl.getContext("2d")!;
 const watermarkTextEl = document.getElementById("watermarkText") as HTMLInputElement;
+const watermarkTextSizeEl = document.getElementById("watermarkTextSize") as HTMLInputElement;
+const watermarkTextSizeValueEl = document.getElementById("watermarkTextSizeValue")!;
 const watermarkOpacityEl = document.getElementById("watermarkOpacity") as HTMLInputElement;
+const watermarkOpacityValueEl = document.getElementById("watermarkOpacityValue")!;
+const watermarkLocationEl = document.getElementById("watermarkLocation") as HTMLSelectElement;
+const watermarkOrientationEl = document.getElementById("watermarkOrientation") as HTMLSelectElement;
 const watermarkLogoFileEl = document.getElementById("watermarkLogoFile") as HTMLInputElement;
 const watermarkLogoPreviewEl = document.getElementById("watermarkLogoPreview") as HTMLImageElement;
 const watermarkLogoNameEl = document.getElementById("watermarkLogoName")!;
@@ -992,9 +1088,23 @@ const watermarkAddBtn = document.getElementById("watermarkAdd") as HTMLButtonEle
 const watermarkCancelBtn = document.getElementById("watermarkCancel") as HTMLButtonElement;
 
 let watermarkLogoDataUrl: string | null = null;
+// Decoded once per logo change rather than on every preview repaint or Add
+// click — createImageBitmap is async, so the Add handler awaits this
+// promise instead of re-decoding, which both avoids redundant work and
+// keeps Add from committing before the *latest* chosen logo is ready.
+let watermarkLogoBitmap: ImageBitmap | null = null;
+let watermarkLogoBitmapReady: Promise<void> = Promise.resolve();
 
 function updateWatermarkAddEnabled(): void {
   watermarkAddBtn.disabled = !watermarkTextEl.value.trim() && !watermarkLogoDataUrl;
+}
+
+function refreshWatermarkLogoBitmap(): void {
+  const dataUrl = watermarkLogoDataUrl;
+  watermarkLogoBitmapReady = (async () => {
+    watermarkLogoBitmap = dataUrl ? await createImageBitmap(await (await fetch(dataUrl)).blob()) : null;
+    updateWatermarkPreview();
+  })();
 }
 
 function showWatermarkLogoPreview(dataUrl: string | null, name: string): void {
@@ -1004,12 +1114,57 @@ function showWatermarkLogoPreview(dataUrl: string | null, name: string): void {
   watermarkLogoNameEl.textContent = dataUrl ? name : "No logo chosen";
   watermarkRemoveLogoBtn.hidden = !dataUrl;
   updateWatermarkAddEnabled();
+  refreshWatermarkLogoBitmap();
+}
+
+/** Renders a live preview of a single watermark instance — logo plus text,
+ * at the configured opacity/text size/orientation — not the tiled pattern
+ * across the actual page. Location doesn't affect this: it only decides
+ * *where the pattern repeats*, not what one instance looks like, so
+ * there's nothing for it to change here. A flat neutral background (not
+ * the real capture) keeps the focus on the watermark's own contrast,
+ * which is what actually determines legibility on any page. */
+function updateWatermarkPreview(): void {
+  const boxW = watermarkPreviewEl.width;
+  const boxH = watermarkPreviewEl.height;
+  watermarkPreviewCtx.clearRect(0, 0, boxW, boxH);
+  watermarkPreviewCtx.fillStyle = "#9aa0a6";
+  watermarkPreviewCtx.fillRect(0, 0, boxW, boxH);
+
+  const text = watermarkTextEl.value.trim();
+  if (!text && !watermarkLogoBitmap) return;
+
+  const opacity = Number(watermarkOpacityEl.value) / 100;
+  const orientationDeg = Number(watermarkOrientationEl.value) as 0 | 45;
+  const textScale = Number(watermarkTextSizeEl.value) / 100;
+  const cellWidth = boxW * 0.7;
+  const cellHeight = boxH * 0.5;
+  const angle = (-orientationDeg * Math.PI) / 180;
+
+  watermarkPreviewCtx.save();
+  watermarkPreviewCtx.translate(boxW / 2, boxH / 2);
+  if (angle) watermarkPreviewCtx.rotate(angle);
+  drawWatermarkCell(watermarkPreviewCtx, { x: -cellWidth / 2, y: -cellHeight / 2, width: cellWidth, height: cellHeight }, text, watermarkLogoBitmap, opacity, textScale);
+  watermarkPreviewCtx.restore();
+}
+
+function updateWatermarkTextSizeLabel(): void {
+  watermarkTextSizeValueEl.textContent = `${watermarkTextSizeEl.value}%`;
+}
+
+function updateWatermarkOpacityLabel(): void {
+  watermarkOpacityValueEl.textContent = `${watermarkOpacityEl.value}%`;
 }
 
 async function openWatermarkPanel(): Promise<void> {
   watermarkTextEl.value = "";
-  watermarkOpacityEl.value = "60";
+  watermarkTextSizeEl.value = "100";
+  watermarkOpacityEl.value = "15";
+  watermarkLocationEl.value = "full";
+  watermarkOrientationEl.value = "0";
   watermarkLogoFileEl.value = "";
+  updateWatermarkTextSizeLabel();
+  updateWatermarkOpacityLabel();
   // Preload whatever logo was saved from a previous session, so repeated
   // branded exports don't need re-picking the file every time — see
   // chrome/watermark-logo-store.ts.
@@ -1017,13 +1172,29 @@ async function openWatermarkPanel(): Promise<void> {
   showWatermarkLogoPreview(saved, saved ? "Saved logo" : "");
   watermarkPanel.hidden = false;
   watermarkTextEl.focus();
+  updateWatermarkPreview();
 }
 
 function closeWatermarkPanel(): void {
   watermarkPanel.hidden = true;
 }
 
-watermarkTextEl.addEventListener("input", updateWatermarkAddEnabled);
+watermarkTextEl.addEventListener("input", () => {
+  updateWatermarkAddEnabled();
+  updateWatermarkPreview();
+});
+
+watermarkTextSizeEl.addEventListener("input", () => {
+  updateWatermarkTextSizeLabel();
+  updateWatermarkPreview();
+});
+
+watermarkOpacityEl.addEventListener("input", () => {
+  updateWatermarkOpacityLabel();
+  updateWatermarkPreview();
+});
+
+watermarkOrientationEl.addEventListener("change", updateWatermarkPreview);
 
 watermarkChooseLogoBtn.addEventListener("click", () => watermarkLogoFileEl.click());
 
@@ -1048,30 +1219,18 @@ watermarkRemoveLogoBtn.addEventListener("click", async () => {
 
 watermarkCancelBtn.addEventListener("click", closeWatermarkPanel);
 
-/** Bottom-right corner, sized proportionally to the capture so it reads
- * consistently regardless of resolution. */
-function defaultWatermarkRect(): Rect {
-  const width = Math.max(80, Math.round(canvas.width * 0.22));
-  const height = Math.max(40, Math.round(width * 0.5));
-  const margin = Math.round(canvas.width * 0.02);
-  return {
-    x: clampNum(canvas.width - width - margin, 0, Math.max(0, canvas.width - width)),
-    y: clampNum(canvas.height - height - margin, 0, Math.max(0, canvas.height - height)),
-    width,
-    height,
-  };
-}
-
 watermarkAddBtn.addEventListener("click", async () => {
+  await watermarkLogoBitmapReady;
   const text = watermarkTextEl.value.trim();
   const opacity = Number(watermarkOpacityEl.value) / 100;
-  const logoBitmap = watermarkLogoDataUrl ? await createImageBitmap(await (await fetch(watermarkLogoDataUrl)).blob()) : null;
-  if (!text && !logoBitmap) return; // belt-and-suspenders; the button is disabled for this case already
+  const location = watermarkLocationEl.value as WatermarkLocation;
+  const orientationDeg = Number(watermarkOrientationEl.value) as 0 | 45;
+  const textScale = Number(watermarkTextSizeEl.value) / 100;
+  if (!text && !watermarkLogoBitmap) return; // belt-and-suspenders; the button is disabled for this case already
   if (pendingShape) commitPendingShape(); // bake whatever was already pending first, same as switching tools
-  pendingShape = { kind: "watermark", rect: defaultWatermarkRect(), text, logoBitmap, opacity };
+  applyWatermarkPattern(location, orientationDeg, text, watermarkLogoBitmap, opacity, textScale);
   closeWatermarkPanel();
   selectTool("select");
-  renderPendingShape();
 });
 
 // --- toolbar / load / save --------------------------------------------------
@@ -1101,6 +1260,10 @@ document.getElementById("closeEditor")!.addEventListener("click", async () => {
   } else {
     window.close();
   }
+});
+
+document.getElementById("splitNoticeClose")!.addEventListener("click", () => {
+  document.getElementById("splitNotice")!.classList.remove("visible");
 });
 
 cropApplyBtn.addEventListener("click", commitPendingCrop);
@@ -1227,8 +1390,9 @@ function requestEditorImageBytes(): Promise<Uint8Array | null> {
 // than this file makes today.
 async function loadImage(): Promise<void> {
   const bytes = await requestEditorImageBytes();
-  const stored = await ext.storage.session.get("editorDpr");
+  const stored = await ext.storage.session.get(["editorDpr", "editorImageCount"]);
   const dpr: number | undefined = stored["editorDpr"];
+  const imageCount: number | undefined = stored["editorImageCount"];
   if (!bytes) {
     setStatus("No captured image found — capture a page first, then click Annotate.");
     return;
@@ -1242,6 +1406,19 @@ async function loadImage(): Promise<void> {
   syncPreviewCanvas();
   setStatus(`${bitmap.width}×${bitmap.height}`);
   selectTool("crop");
+  // A page large enough to exceed shot-core's per-image pixel cap
+  // (plan.rs's MAX_CANVAS_AREA_PX) splits into several output PNGs — this
+  // editor only ever gets the first one (see getLastCaptureFirstImage's
+  // own comment for why: cropping across a split boundary isn't
+  // well-defined). Silently showing part of the page as if it were the
+  // whole thing reads as data loss, not a deliberate tradeoff, unless
+  // this says so — a persistent banner rather than the status caption
+  // above, since that gets overwritten by the very next tool click.
+  if (imageCount && imageCount > 1) {
+    document.getElementById("splitNoticeText")!.textContent =
+      `Showing part 1 of ${imageCount} — this page was too large for one image and was split. Use “Export as PDF” from the popup for the complete page.`;
+    document.getElementById("splitNotice")!.classList.add("visible");
+  }
 }
 
 // The canvas's rendered size (and so previewCanvas's, which tracks it)

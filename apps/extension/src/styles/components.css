@@ -101,16 +101,21 @@
   transition:var(--transition-control);
 }
 .field-control:focus-within{border-color:var(--border-focus);box-shadow:var(--focus-ring)}
-.field-control input{
+.field-control input,.field-control select{
   flex:1;
   min-width:0;
   border:0;
   outline:none;
-  background:transparent;
   font:var(--weight-regular) 13px/1.2 var(--font-sans);
   color:var(--text-strong);
 }
+.field-control input{background:transparent}
 .field-control input::placeholder{color:var(--text-faint)}
+/* A native <select>'s own widget chrome (not just its text) can paint an
+   opaque background regardless of the wrapper behind it, unlike <input> —
+   background:transparent isn't reliable here across engines, so this sets
+   the select's background explicitly instead of leaning on the wrapper's. */
+.field-control select{background-color:var(--surface-card)}
 .field-hint{font:var(--type-caption);color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .card{

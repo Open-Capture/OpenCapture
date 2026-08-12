@@ -1395,7 +1395,7 @@ test("export-as-PDF and annotate survive the background service worker being evi
   await page.close();
 });
 
-test("watermark tool: text and logo, remembers the chosen logo, undo reverts", async ({ context, serviceWorker }) => {
+test("watermark tool: tiled pattern respects location/orientation, remembers the chosen logo, undo reverts", async ({ context, serviceWorker }) => {
   const page = await context.newPage();
   await page.setViewportSize({ width: 800, height: 600 });
   await page.goto(`${BASE_URL}/ruler-3000.html`);
@@ -1424,32 +1424,47 @@ test("watermark tool: text and logo, remembers the chosen logo, undo reverts", a
     return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
   });
 
-  // Mirrors editor.ts's own defaultWatermarkRect() exactly — the region a
-  // committed watermark actually lands in — rather than a single pixel,
-  // since neither text glyphs nor a logo fill their box solidly; a single
-  // sampled point could easily land in a gap and read as unchanged.
-  function sampleWatermarkRegion(): Promise<number[]> {
-    return editorPage.evaluate(() => {
+  const canvasSize = await editorPage.evaluate(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return { width: c.width, height: c.height };
+  });
+
+  function sampleRegion(rect: { x: number; y: number; width: number; height: number }): Promise<number[]> {
+    return editorPage.evaluate((r) => {
       const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-      const width = Math.max(80, Math.round(canvas.width * 0.22));
-      const height = Math.max(40, Math.round(width * 0.5));
-      const margin = Math.round(canvas.width * 0.02);
-      const x = Math.min(Math.max(0, canvas.width - width - margin), canvas.width - width);
-      const y = Math.min(Math.max(0, canvas.height - height - margin), canvas.height - height);
       const ctx = canvas.getContext("2d")!;
-      return Array.from(ctx.getImageData(x, y, width, height).data);
-    });
+      return Array.from(ctx.getImageData(r.x, r.y, r.width, r.height).data);
+    }, rect);
   }
   function regionsDiffer(a: number[], b: number[]): boolean {
     if (a.length !== b.length) return true;
     return a.some((v, i) => v !== b[i]);
   }
 
-  const canvasBox = await editorPage.locator("#canvas").boundingBox();
-  if (!canvasBox) throw new Error("canvas has no bounding box");
-  const baseline = await sampleWatermarkRegion();
+  const fullRect = { x: 0, y: 0, width: canvasSize.width, height: canvasSize.height };
+  // Mirrors editor.ts's watermarkCellSize()/watermarkBands() exactly, for
+  // the location checks below — "top"/"bottom" are sized to exactly one
+  // tile's height (a single row), not a fixed fraction of the page.
+  const cellWidth = Math.max(40, Math.round(canvasSize.width * 0.16));
+  const bandHeight = Math.max(24, Math.round(cellWidth * 0.5));
+  const topRect = { x: 0, y: 0, width: canvasSize.width, height: Math.min(bandHeight, canvasSize.height) };
+  const bottomHeight = Math.min(bandHeight, canvasSize.height);
+  const bottomRect = { x: 0, y: canvasSize.height - bottomHeight, width: canvasSize.width, height: bottomHeight };
+  // A band safely outside both top and bottom bands, to prove
+  // location-scoped patterns leave the rest of the page untouched.
+  const middleRect = {
+    x: 0,
+    y: Math.round(canvasSize.height * 0.4),
+    width: canvasSize.width,
+    height: Math.max(1, Math.round(canvasSize.height * 0.2)),
+  };
 
-  // --- text watermark: place, commit, verify pixels changed, undo reverts exactly ---
+  const baselineFull = await sampleRegion(fullRect);
+  const baselineTop = await sampleRegion(topRect);
+  const baselineBottom = await sampleRegion(bottomRect);
+  const baselineMiddle = await sampleRegion(middleRect);
+
+  // --- default (full page) text watermark: Add bakes it in immediately, undo reverts exactly ---
   await editorPage.click("#toolWatermark");
   await expect(editorPage.locator("#watermarkPanel")).toBeVisible();
   await expect(editorPage.locator("#watermarkAdd")).toBeDisabled(); // neither text nor logo yet
@@ -1457,18 +1472,47 @@ test("watermark tool: text and logo, remembers the chosen logo, undo reverts", a
   await editorPage.fill("#watermarkText", "TEST");
   await expect(editorPage.locator("#watermarkAdd")).toBeEnabled();
   await editorPage.click("#watermarkAdd");
+  // Unlike the old single-instance, draggable version, Add now tiles the
+  // pattern straight into the canvas — no separate commit click needed.
   await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
 
-  // Committing works exactly like any other pending shape: the Select
-  // tool (now active — see editor.ts's watermarkAdd handler) bakes it in
-  // on a click outside its own rect.
-  await editorPage.mouse.click(canvasBox.x + 10, canvasBox.y + 10);
-  const afterText = await sampleWatermarkRegion();
-  expect(regionsDiffer(baseline, afterText)).toBe(true);
+  expect(regionsDiffer(baselineFull, await sampleRegion(fullRect))).toBe(true);
 
   await editorPage.click("#undo");
-  const afterUndo = await sampleWatermarkRegion();
-  expect(regionsDiffer(baseline, afterUndo)).toBe(false);
+  expect(regionsDiffer(baselineFull, await sampleRegion(fullRect))).toBe(false);
+
+  // --- "top only" location: top band changes, an untouched middle/bottom band doesn't ---
+  await editorPage.click("#toolWatermark");
+  await editorPage.fill("#watermarkText", "TOP");
+  await editorPage.selectOption("#watermarkLocation", "top");
+  await editorPage.click("#watermarkAdd");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  expect(regionsDiffer(baselineTop, await sampleRegion(topRect))).toBe(true);
+  expect(regionsDiffer(baselineMiddle, await sampleRegion(middleRect))).toBe(false);
+  expect(regionsDiffer(baselineBottom, await sampleRegion(bottomRect))).toBe(false);
+  await editorPage.click("#undo");
+
+  // --- "bottom only" location: bottom band changes, top/middle don't ---
+  await editorPage.click("#toolWatermark");
+  await editorPage.fill("#watermarkText", "BOTTOM");
+  await editorPage.selectOption("#watermarkLocation", "bottom");
+  await editorPage.click("#watermarkAdd");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  expect(regionsDiffer(baselineBottom, await sampleRegion(bottomRect))).toBe(true);
+  expect(regionsDiffer(baselineTop, await sampleRegion(topRect))).toBe(false);
+  expect(regionsDiffer(baselineMiddle, await sampleRegion(middleRect))).toBe(false);
+  await editorPage.click("#undo");
+
+  // --- 45° orientation still commits fine across the full page ---
+  await editorPage.click("#toolWatermark");
+  await editorPage.fill("#watermarkText", "SLANT");
+  await editorPage.selectOption("#watermarkOrientation", "45");
+  await editorPage.click("#watermarkAdd");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+  expect(regionsDiffer(baselineFull, await sampleRegion(fullRect))).toBe(true);
+  await editorPage.click("#undo");
 
   // --- logo watermark: choosing a file is enough on its own (no text needed) ---
   await editorPage.click("#toolWatermark");
@@ -1479,18 +1523,16 @@ test("watermark tool: text and logo, remembers the chosen logo, undo reverts", a
   await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
 
   // Reopening remembers the logo without re-picking the file — see
-  // chrome/watermark-logo-store.ts.
+  // chrome/watermark-logo-store.ts. Each panel open also resets Location
+  // back to its "full" default, so this exercises that path too.
   await editorPage.click("#toolWatermark");
   await expect(editorPage.locator("#watermarkLogoPreview")).toBeVisible();
   await editorPage.click("#watermarkAdd");
-  // Unlike the text-only case above, this Add click awaits decoding the
-  // logo (fetch + createImageBitmap) before it sets the pending shape —
-  // wait for that to actually finish, or the click below can land before
-  // there's anything pending to commit.
+  // Unlike the text-only cases above, this Add click awaits decoding the
+  // logo (fetch + createImageBitmap) before it applies the pattern — wait
+  // for the panel to actually close before sampling.
   await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
-  await editorPage.mouse.click(canvasBox.x + 10, canvasBox.y + 10);
-  const afterLogo = await sampleWatermarkRegion();
-  expect(regionsDiffer(baseline, afterLogo)).toBe(true);
+  expect(regionsDiffer(baselineFull, await sampleRegion(fullRect))).toBe(true);
 
   await editorPage.close();
   await page.close();
