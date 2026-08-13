@@ -52,6 +52,13 @@ jobs:
           cache-dependency-path: apps/extension/package-lock.json
       - run: npm ci
         working-directory: apps/extension
+      # typecheck needs src/wasm-gen/ (the wasm-bindgen glue) to already
+      # exist — background/wasm-loader.ts and editor/editor.ts import it
+      # directly, and it's gitignored/generated, not committed. Running
+      # this first is cheaper than the full `npm run build` and keeps
+      # typecheck failing on real type errors instead of a missing module.
+      - run: npm run build:wasm
+        working-directory: apps/extension
       - run: npm run typecheck
         working-directory: apps/extension
       - run: npm test
