@@ -69,6 +69,12 @@ jobs:
         with:
           name: extension-dist
           path: apps/extension/dist
+      - run: npm run build:firefox
+        working-directory: apps/extension
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist-firefox
+          path: apps/extension/dist-firefox
 
   e2e:
     name: playwright e2e (real headless Chrome)
