@@ -1283,6 +1283,37 @@ async function handleWatermarkToolClick(): Promise<void> {
   renderWatermarkGate({ kind: "locked" });
 }
 
+// openappsClient here was constructed once at page load and hydrated from
+// chrome.storage.session then — it has no built-in way to notice a session
+// adopted later by background.ts from a *different* tab's sign-in (see
+// asyncBackedStore in the SDK: the in-memory copy only updates via this
+// same instance's own set()/adoptSession()). account.ts solves this with a
+// full page reload; that would be wrong here, since it could discard
+// in-progress canvas edits. Re-hydrating this client directly, in place,
+// gets the same result without touching the canvas.
+ext.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "session" || !("openapps.session" in changes)) return;
+  const next = changes["openapps.session"].newValue as { accessToken: string; refreshToken: string } | undefined;
+  if (next) {
+    openappsClient.adoptSession(next.accessToken, next.refreshToken);
+  } else {
+    openappsClient.clearSession();
+  }
+  if (!watermarkGatePanel.hidden) void handleWatermarkToolClick();
+});
+
+// Buying credits happens in the account tab too (see "insufficient" above),
+// and a balance top-up isn't a session change, so the listener above won't
+// catch it. Re-running the check whenever this tab becomes visible again
+// covers that case, and is a harmless no-op re-check otherwise. Only while
+// the gate is actually open: an unrelated tab switch while the watermark
+// panel itself is in use shouldn't trigger a check.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && !watermarkGatePanel.hidden) {
+    void handleWatermarkToolClick();
+  }
+});
+
 // --- toolbar / load / save --------------------------------------------------
 
 toolButtons.forEach((btn) => {
