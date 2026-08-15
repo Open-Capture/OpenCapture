@@ -1,5 +1,5 @@
 import { EDITOR_IMAGE_BLOB_KEY, EDITOR_IMAGE_PORT_NAME, deleteBlob, getBlob, putBlob } from "../chrome/blob-store";
-import { client as openappsClient, ready as openappsReady } from "../chrome/openapps-session";
+import { client as openappsClient, ready as openappsReady, store as openappsStore } from "../chrome/openapps-session";
 import { saveOutput } from "../chrome/save";
 import { ext } from "../platform/webext";
 import type { PopupRequest, PopupResponse } from "../types";
@@ -203,6 +203,36 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       ext.tabs.remove(sender.tab.id).catch(() => {});
     }
     sendResponse({ ok: true });
+  })();
+  return true; // keep the message channel open for the async work above
+});
+
+// The reverse handoff: openapps-callback/index.ts on a /link tab (opened
+// from account.ts to connect a second identity) asks for the *current*
+// session's access token, since chrome.storage — where it actually lives —
+// is invisible to that page. Same sender-origin check as the session
+// listener above, and for the same reason: this is the one thing standing
+// between a page and a live, usable bearer token.
+ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  const request = message as { type?: string };
+  if (request?.type !== "openapps:request-token") return false;
+
+  const from = sender.url ?? "";
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(from).origin === new URL(openappsClient.baseUrl).origin;
+  } catch {
+    sameOrigin = false;
+  }
+  if (!sameOrigin) {
+    console.warn("[openapps] ignoring token request from unexpected sender", from);
+    sendResponse({});
+    return false;
+  }
+
+  (async () => {
+    await openappsReady;
+    sendResponse({ accessToken: openappsStore.get()?.accessToken });
   })();
   return true; // keep the message channel open for the async work above
 });

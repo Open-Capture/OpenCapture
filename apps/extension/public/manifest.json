@@ -34,7 +34,8 @@
     {
       "matches": [
         "https://accounts.openapps.network/v1/auth/oidc/google/callback*",
-        "https://accounts.openapps.network/signin*"
+        "https://accounts.openapps.network/signin*",
+        "https://accounts.openapps.network/link*"
       ],
       "js": [
         "openapps-callback.js"

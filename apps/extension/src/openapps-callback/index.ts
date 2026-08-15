@@ -1,21 +1,28 @@
-// Content script, injected only on the two OpenApps server URLs that ever
-// hand out a session (see manifest.json's `content_scripts` entry —
+// Content script, injected only on the OpenApps server URLs that ever hand
+// out a session or need one (see manifest.json's `content_scripts` entry —
 // deliberately narrower than this extension's usual zero-standing-access
-// posture, since this is the one origin that issues sessions at all).
+// posture, since these are the only origins that ever touch a session).
 //
-// A page script cannot reach extension storage, so this relays the tokens
-// to the background service worker, which is the only context that writes
-// the session (see background/index.ts's "openapps:session" listener,
-// which re-checks the sender's origin before trusting this).
+// A page script cannot reach extension storage, so this relays tokens
+// between the page and the background service worker, which is the only
+// context that holds the session (see background/index.ts's
+// "openapps:session" and "openapps:request-token" listeners, both of which
+// re-check the sender's origin before trusting this).
 //
-// Two ways a session arrives, because there are two flows:
+// Three flows, two directions:
 //
 //   /signin                        — the server-hosted sign-in page, which
-//     posts the session to its own window once the user has signed in with
-//     Google, a wallet or Nostr. It exists because an extension page never
-//     receives an injected `window.ethereum` or `window.nostr`: Chrome only
-//     injects into http(s) pages, so wallet and Nostr sign-in are
-//     impossible in our own window no matter what the user has installed.
+//     posts a *new* session OUT to its own window once the user has signed
+//     in with Google, a wallet or Nostr. Exists because an extension page
+//     never receives an injected `window.ethereum` or `window.nostr`:
+//     Chrome only injects into http(s) pages, so wallet and Nostr sign-in
+//     are impossible in our own window no matter what's installed.
+//
+//   /link                          — the linking counterpart: connecting a
+//     *second* identity to an *already signed-in* account, for the same
+//     injection reason as /signin. This one needs a token handed IN rather
+//     than a session handed out — the page has no session of its own yet
+//     to authenticate with, and chrome.storage is invisible to it.
 //
 //   …/oidc/google/callback         — the older Google-only path, which
 //     answers with JSON the browser renders as text. Still handled: it is
@@ -30,6 +37,24 @@
 
   function relay(accessToken: string, refreshToken: string): void {
     ext.runtime.sendMessage({ type: "openapps:session", accessToken, refreshToken });
+  }
+
+  // The /link handoff, the reverse direction: the page asks for a token by
+  // announcing readiness, and this asks the background worker for whatever
+  // session is currently stored (no session at all just means the answer
+  // is "no token" — /link's own page shows an explanatory error for that,
+  // same as it does for a genuinely unreachable extension).
+  if (location.pathname === "/link") {
+    window.addEventListener("message", (event) => {
+      if (event.source !== window || event.origin !== location.origin) return;
+      const data = event.data as { source?: string; type?: string } | undefined;
+      if (data?.source !== "openapps-host" || data.type !== "openapps-link:ready") return;
+      ext.runtime.sendMessage({ type: "openapps:request-token" }, (response: { accessToken?: string } | undefined) => {
+        if (!response?.accessToken) return;
+        window.postMessage({ source: "openapps-extension", type: "openapps-link:token", accessToken: response.accessToken }, location.origin);
+      });
+    });
+    return; // /link never hands out a session — nothing below applies to it.
   }
 
   // The /signin handoff. A content script shares the page's window, so a

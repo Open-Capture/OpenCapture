@@ -76,6 +76,36 @@ signOutBtn.addEventListener("click", async () => {
   }
 });
 
+// <openapps-account>'s own "Connect Google/Wallet/Nostr" buttons (for
+// linking a *second* identity to an already-signed-in account) assume a
+// normal https page where a signer can inject — exactly the assumption
+// this page itself can never satisfy, for the same reason the sign-in
+// card above doesn't use <openapps-login>'s own Google button either. That
+// makes every one of those buttons fail the same way "no wallet/signer
+// found" does on a genuinely bare browser, except here it's never
+// recoverable no matter what's installed.
+//
+// Unlike <openapps-buy>'s checkout flow, there's no "openapps-connect"
+// event to intercept before the doomed attempt runs — so this catches the
+// click in the capture phase (before the component's own bubble-phase
+// handler) and redirects to /link instead. `composedPath()` is what makes
+// this possible from outside the element's shadow root at all; a plain
+// `event.target` would be retargeted to <openapps-account> itself.
+// Matching on button text is fragile to an @openapps/ui copy change —
+// accepted for now since the component exposes no better hook.
+const CONNECT_LABELS = ["Connect Google", "Connect Wallet", "Connect Nostr"];
+document.querySelector("openapps-account")!.addEventListener(
+  "click",
+  (event) => {
+    const button = event.composedPath().find((el): el is HTMLButtonElement => el instanceof HTMLButtonElement);
+    if (!button || !CONNECT_LABELS.includes(button.textContent?.trim() ?? "")) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    ext.tabs.create({ url: new URL("/link", openappsClient.baseUrl).toString() });
+  },
+  true,
+);
+
 function render(): void {
   signInCard.hidden = openappsClient.isLoggedIn;
   signOutBtn.hidden = !openappsClient.isLoggedIn;

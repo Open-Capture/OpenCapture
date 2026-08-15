@@ -1654,3 +1654,79 @@ test("watermark tool: signed in but not yet Supporter shows the 1000-credit unlo
   await editorPage.close();
   await page.close();
 });
+
+test("account page: connecting a wallet or Nostr identity opens /link instead of attempting an in-page connection", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  // <openapps-account>'s own "Connect a wallet"/"Connect Nostr" buttons
+  // call wallet.js's connectEthereum()/signNostr() directly, which can
+  // never work on a chrome-extension:// page — no signer is ever injected
+  // into one, the same reason /signin exists for the initial sign-in.
+  // account.ts intercepts those clicks in the capture phase and redirects
+  // to /link instead; this proves the redirect fires, not that /link's own
+  // flow completes (that's link_page.rs's job, server-side).
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.set({
+      "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
+    });
+  });
+  await context.route("https://accounts.openapps.network/v1/auth/methods", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ methods: { google: true, eip155: true, nostr: true } }),
+    }),
+  );
+  await context.route("https://accounts.openapps.network/v1/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "e2e-user",
+        display_name: "E2E Test",
+        balance: 500,
+        linked_accounts: [{ namespace: "google", caip10: "google:e2e", label: "e2e@example.com" }],
+      }),
+    }),
+  );
+  await context.route("https://accounts.openapps.network/v1/credits/balance", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ balance: 500 }) }),
+  );
+  const accountPage = await context.newPage();
+  await accountPage.goto(`chrome-extension://${extensionId}/account.html`);
+  await accountPage.waitForLoadState();
+
+  // Stubbed rather than let it really open a tab: this sandbox has no
+  // route to accounts.openapps.network at all, so a real navigation just
+  // hits a Chrome network-error page, which proves nothing either way.
+  // What matters is what ext.tabs.create() was *asked* to do — same
+  // pattern popup.ts's own download tests already use for
+  // chrome.downloads.download, for the same reason.
+  await accountPage.evaluate(() => {
+    (window as unknown as { __capturedTabCreate: chrome.tabs.CreateProperties[] }).__capturedTabCreate = [];
+    chrome.tabs.create = ((opts: chrome.tabs.CreateProperties) => {
+      (window as unknown as { __capturedTabCreate: chrome.tabs.CreateProperties[] }).__capturedTabCreate.push(opts);
+      return Promise.resolve({} as chrome.tabs.Tab);
+    }) as typeof chrome.tabs.create;
+  });
+
+  const connectWallet = accountPage.getByRole("button", { name: "Connect Wallet" });
+  await expect(connectWallet).toBeVisible();
+  await connectWallet.click();
+
+  const captured = await accountPage.evaluate(
+    () => (window as unknown as { __capturedTabCreate: chrome.tabs.CreateProperties[] }).__capturedTabCreate,
+  );
+  expect(captured).toHaveLength(1);
+  expect(captured[0]?.url).toBe("https://accounts.openapps.network/link");
+  // Never navigated the account tab itself, and the doomed in-page
+  // wallet.js call never ran (no "no Ethereum wallet found" error here) —
+  // the interception genuinely replaced the built-in behavior rather than
+  // running alongside it.
+  expect(accountPage.url()).toContain("account.html");
+  await expect(accountPage.locator(".error")).toHaveCount(0);
+
+  await accountPage.close();
+});
