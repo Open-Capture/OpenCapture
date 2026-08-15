@@ -232,6 +232,19 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
 
   (async () => {
     await openappsReady;
+    // A raw store read can hand over an access token that already expired —
+    // nothing checks it until some request 401s, and /link's calls are
+    // plain fetch()es with none of openappsClient's own 401-refresh-retry
+    // handling. Force that check now, through a call that does have it, so
+    // a stale token gets rotated before it ever leaves this file.
+    try {
+      await openappsClient.credits.balance();
+    } catch {
+      // Ignored: a dead session already cleared itself (openappsClient sets
+      // the store to null on a 401 that survives its own refresh attempt),
+      // and a network hiccup here shouldn't block handing over whatever
+      // token is still cached.
+    }
     sendResponse({ accessToken: openappsStore.get()?.accessToken });
   })();
   return true; // keep the message channel open for the async work above
