@@ -48,6 +48,14 @@
   transition:var(--transition-control);
   text-decoration:none;
 }
+/* .btn's own display:inline-flex is an author-stylesheet rule, which beats
+   the [hidden] attribute's user-agent-stylesheet display:none regardless
+   of source order — origin outranks specificity here. Without this, any
+   .btn toggled via the hidden property (or attribute) stays visually
+   visible despite hidden being true. Confirmed live: #signOut and
+   #watermarkRemoveLogo both rendered while genuinely hidden until this
+   was added. */
+.btn[hidden]{display:none}
 .btn:disabled{cursor:not-allowed;opacity:.45}
 .btn-full{width:100%}
 .btn-lg{height:var(--control-h-lg);padding:0 16px;font-size:14px;gap:10px}

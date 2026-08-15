@@ -24,7 +24,10 @@
   "host_permissions": ["https://accounts.openapps.network/*"],
   "content_scripts": [
     {
-      "matches": ["https://accounts.openapps.network/v1/auth/oidc/google/callback*"],
+      "matches": [
+        "https://accounts.openapps.network/v1/auth/oidc/google/callback*",
+        "https://accounts.openapps.network/signin*"
+      ],
       "js": ["openapps-callback.js"],
       "run_at": "document_idle"
     }

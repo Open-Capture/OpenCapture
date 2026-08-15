@@ -33,55 +33,57 @@ ext.storage.onChanged.addListener((changes, areaName) => {
 });
 
 const signInCard = document.getElementById("signInCard")!;
-const stripeBuyCard = document.getElementById("stripeBuyCard")!;
-const stripePackagesEl = document.getElementById("stripePackages")!;
+const buyEl = document.querySelector("openapps-buy")!;
+const signOutBtn = document.getElementById("signOut") as HTMLButtonElement;
 
-document.getElementById("signInGoogle")!.addEventListener("click", () => {
-  // No `returnTo`: the server answers with the session as JSON instead of
-  // redirecting anywhere, which is what openapps-callback/index.ts expects
-  // to find and relay to background.ts. See that file and
-  // background/index.ts's "openapps:session" listener for the rest of the
-  // handoff.
-  ext.tabs.create({ url: openappsClient.auth.googleStartUrl() });
+document.getElementById("signIn")!.addEventListener("click", () => {
+  // The server's own sign-in page, in its own tab. It is an https origin,
+  // so a wallet or Nostr extension actually injects into it — neither will
+  // ever appear in this window — and it hands the session back through
+  // openapps-callback/index.ts. See background/index.ts's
+  // "openapps:session" listener for the rest of the handoff.
+  ext.tabs.create({ url: new URL("/signin", openappsClient.baseUrl).toString() });
 });
 
-async function renderStripePackages(): Promise<void> {
+// <openapps-buy> would navigate this window to Stripe, which for an
+// extension page means destroying it mid-purchase. Taking the event over
+// keeps the account page and puts checkout in its own tab; the balance
+// updates on <openapps-credits>'s next poll once the payment settles.
+buyEl.addEventListener("openapps-checkout", (event) => {
+  const { url } = (event as CustomEvent<{ url: string }>).detail;
+  event.preventDefault();
+  ext.tabs.create({ url });
+});
+
+// The session lives in chrome.storage.session, shared with the background
+// worker, so signing out has to clear it there rather than just in this
+// page's memory — which is what the SDK's logout does via the store passed
+// to configure(). The storage change then reloads this page through the
+// listener above, so there is no separate re-render here.
+//
+// The SDK revokes server-side and clears locally in a `finally`, so a
+// failed request still ends with this device signed out; the catch is only
+// so the button recovers instead of leaving a rejected promise behind.
+signOutBtn.addEventListener("click", async () => {
+  signOutBtn.disabled = true;
   try {
-    const { packages } = await openappsClient.payments.packages();
-    stripePackagesEl.replaceChildren(
-      ...packages.map((pkg) => {
-        const btn = document.createElement("button");
-        btn.className = "btn btn-secondary btn-full";
-        btn.textContent = `${pkg.credits.toLocaleString()} credits — $${(pkg.usd_price / 100).toFixed(2)}`;
-        btn.addEventListener("click", async () => {
-          btn.disabled = true;
-          try {
-            // returnTo: null lands the browser on the server's own
-            // confirmation page instead of trying to redirect back here —
-            // the same chrome-extension:// redirect Chrome blocks for
-            // sign-in above applies just as much to a Stripe return URL.
-            // The new tab is where checkout happens; this page just opens
-            // it and lets <openapps-credits>'s poll pick up the new
-            // balance once the payment settles.
-            const { checkout_url } = await openappsClient.payments.stripeCheckout(pkg.id, { returnTo: null });
-            ext.tabs.create({ url: checkout_url });
-          } finally {
-            btn.disabled = false;
-          }
-        });
-        return btn;
-      }),
-    );
+    await openappsClient.auth.logout();
   } catch (err) {
-    stripePackagesEl.textContent = err instanceof Error ? err.message : String(err);
+    console.warn("[openapps] sign-out request failed; cleared locally anyway", err);
+  } finally {
+    signOutBtn.disabled = false;
+    render();
   }
+});
+
+function render(): void {
+  signInCard.hidden = openappsClient.isLoggedIn;
+  signOutBtn.hidden = !openappsClient.isLoggedIn;
 }
 
 (async () => {
   await openappsReady;
-  signInCard.hidden = openappsClient.isLoggedIn;
-  stripeBuyCard.hidden = !openappsClient.isLoggedIn;
-  await renderStripePackages();
+  render();
 })();
 
 document.getElementById("closeAccount")!.addEventListener("click", async () => {

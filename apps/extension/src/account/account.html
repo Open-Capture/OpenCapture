@@ -45,15 +45,6 @@
       .oa-card p {
         margin: 0 0 var(--space-2);
       }
-      #stripePackages {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-        margin-top: var(--space-2);
-      }
-      #stripePackages button {
-        justify-content: space-between;
-      }
       /* This account/credits layer is the one thing in OpenCapture
          that talks to a server — everything about a capture itself (the
          image, its pixels, its annotations) stays on-device regardless of
@@ -77,33 +68,42 @@
     </div>
     <div id="accountWrap">
       <div id="accountStack">
-        <!-- Hand-rolled rather than <openapps-login>: that component's
-             Google button redirects back to the current page, and Chrome
-             refuses to land a cross-origin redirect on a chrome-extension://
-             page (net::ERR_BLOCKED_BY_CLIENT, confirmed directly) — so
-             instead this opens the sign-in flow in its own tab and gets the
-             session relayed back via openapps-callback + background.ts,
-             the same pattern the OpenApps Chrome extension reference
-             example uses. See account.ts. -->
+        <!-- Sign-in happens on the server's own page, opened in a real tab,
+             not inside this one. Two reasons, both hard constraints:
+             Chrome refuses to land a cross-origin redirect on a
+             chrome-extension:// page (net::ERR_BLOCKED_BY_CLIENT, confirmed
+             directly), which rules out Google here; and it never injects
+             window.ethereum or window.nostr into an extension page, which
+             rules out wallet and Nostr here no matter what the user has
+             installed. On https://accounts.openapps.network/signin all
+             three work, and the session comes back via openapps-callback +
+             background.ts. See account.ts. -->
         <div id="signInCard" class="oa-card">
-          <p>Sign in to OpenApps</p>
-          <p class="oa-caption">One account for every app in the suite. Optional — OpenCapture works fully without it.</p>
-          <button id="signInGoogle" class="btn btn-primary btn-full">Continue with Google</button>
+          <p>Sign in</p>
+          <p class="oa-caption">Optional — used only for credits and premium features. OpenCapture works fully without it.</p>
+          <button id="signIn" class="btn btn-primary btn-full">Sign in</button>
+          <p class="oa-caption">Opens a new tab to sign in with Google, a wallet, or Nostr.</p>
         </div>
         <openapps-credits poll-seconds="30"></openapps-credits>
         <openapps-account></openapps-account>
-        <!-- Same reasoning as the sign-in card: <openapps-buy>'s Stripe
-             button redirects back to the current page by default, which
-             Chrome blocks here. Lightning/Ethereum don't redirect at all
-             (a QR/address/invoice shown in-page, paid externally), so
-             those stay on the real component — only Stripe is hand-rolled. -->
-        <div id="stripeBuyCard" class="oa-card">
-          <p>Buy credits (card)</p>
-          <div id="stripePackages"></div>
-        </div>
-        <openapps-buy rails="lightning,ethereum"></openapps-buy>
+        <!-- One payment surface for all three rails. `return-to="none"`
+             is what makes card payment possible here: the default is to
+             send the browser back to this page after checkout, and Chrome
+             will not land Stripe's redirect on a chrome-extension:// URL,
+             so the purchase ends on the server's own confirmation page
+             instead. The checkout URL itself is opened in a new tab by
+             account.ts, because navigating this window would destroy it. -->
+        <openapps-buy return-to="none"></openapps-buy>
+        <!-- Sign-out lives in <openapps-login>, which this page does not
+             use (see the sign-in card above), and <openapps-account>
+             manages linked identities without ever touching the session —
+             so without this button there is no way to leave the account
+             from inside the extension at all. -->
+        <!-- Hidden by default so a signed-out user never sees it flash
+             before the persisted session finishes loading. -->
+        <button id="signOut" type="button" class="btn btn-secondary btn-full" hidden>Sign out</button>
         <p id="accountNote">
-          Your account and credit balance are handled by OpenApps. Captures, edits and exports never leave this device.
+          Your account and credit balance are handled by a separate service. Captures, edits and exports never leave this device.
         </p>
       </div>
     </div>

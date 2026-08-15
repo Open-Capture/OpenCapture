@@ -179,8 +179,19 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const openappsMessage = message as { type?: string; accessToken?: string; refreshToken?: string };
   if (openappsMessage?.type !== "openapps:session") return false;
 
+  // Origins compared whole, not by prefix: `startsWith` would have counted
+  // https://accounts.openapps.network.evil.test as our own server. Nothing
+  // could reach it today — the content script only runs on URLs the
+  // manifest lists — but this is the check standing between a page and a
+  // session, and it should not depend on a second file staying narrow.
   const from = sender.url ?? "";
-  if (!openappsMessage.accessToken || !openappsMessage.refreshToken || !from.startsWith(new URL(openappsClient.baseUrl).origin)) {
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(from).origin === new URL(openappsClient.baseUrl).origin;
+  } catch {
+    sameOrigin = false; // no sender URL, or not a URL at all
+  }
+  if (!openappsMessage.accessToken || !openappsMessage.refreshToken || !sameOrigin) {
     console.warn("[openapps] ignoring session message from unexpected sender", from);
     return false;
   }
