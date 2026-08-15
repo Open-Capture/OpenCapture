@@ -142,9 +142,15 @@
       #watermarkGatePanel[hidden] {
         display: none;
       }
+      /* Column, not a side-by-side row: the action label varies ("Sign in"
+         vs "Unlock for 1000 credits" vs "Buy credits"), and paired with
+         "Cancel" in this 280px panel the longer labels don't fit — a
+         flex-end row with no wrap overflows past the panel's own left
+         edge rather than wrapping, since the row is anchored to the right.
+         Stacking removes the fit problem regardless of label length. */
       #watermarkGateActions {
         display: flex;
-        justify-content: flex-end;
+        flex-direction: column;
         gap: var(--space-2);
       }
       #watermarkLogoRow {
@@ -250,8 +256,8 @@
       <p>Supporter feature</p>
       <p id="watermarkGateMessage" class="oa-caption"></p>
       <div id="watermarkGateActions">
-        <button id="watermarkGateCancel" class="btn btn-secondary btn-sm" type="button">Cancel</button>
-        <button id="watermarkGateAction" class="btn btn-primary btn-sm" type="button"></button>
+        <button id="watermarkGateAction" class="btn btn-primary btn-sm btn-full" type="button"></button>
+        <button id="watermarkGateCancel" class="btn btn-secondary btn-sm btn-full" type="button">Cancel</button>
       </div>
     </div>
     <div id="watermarkPanel" class="card" hidden>
