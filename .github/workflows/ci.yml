@@ -55,9 +55,17 @@ jobs:
             echo "  IdentityFile ~/.ssh/watermark_premium_deploy"
             echo "  IdentitiesOnly yes"
           } >> ~/.ssh/config
+      # submodules: recursive on actions/checkout itself doesn't work here:
+      # it rewrites submodule URLs to https://github.com/ with the current
+      # job's own GITHUB_TOKEN embedded (documented behavior, meant to make
+      # public submodules "just work") — that token has no access to a
+      # different private repo, so it 404s before the SSH deploy key above
+      # ever gets a chance to be used. Checking out the main repo alone,
+      # then updating submodules as its own step, leaves the SSH config
+      # from the previous step in charge instead.
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Fetch the private watermark submodule
+        run: git submodule update --init --recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -112,9 +120,17 @@ jobs:
             echo "  IdentityFile ~/.ssh/watermark_premium_deploy"
             echo "  IdentitiesOnly yes"
           } >> ~/.ssh/config
+      # submodules: recursive on actions/checkout itself doesn't work here:
+      # it rewrites submodule URLs to https://github.com/ with the current
+      # job's own GITHUB_TOKEN embedded (documented behavior, meant to make
+      # public submodules "just work") — that token has no access to a
+      # different private repo, so it 404s before the SSH deploy key above
+      # ever gets a chance to be used. Checking out the main repo alone,
+      # then updating submodules as its own step, leaves the SSH config
+      # from the previous step in charge instead.
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Fetch the private watermark submodule
+        run: git submodule update --init --recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
