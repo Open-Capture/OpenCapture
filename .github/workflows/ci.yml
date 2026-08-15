@@ -38,7 +38,26 @@ jobs:
     name: wasm build + extension typecheck/build
     runs-on: ubuntu-latest
     steps:
+      # apps/extension/vendor-private/watermark-premium is a private
+      # submodule (the Supporter watermark feature) — actions/checkout
+      # can't fetch it with the default GITHUB_TOKEN, which is scoped to
+      # this repo only. A read-only deploy key on that one repo, not a
+      # broader account PAT, so a leaked secret here can't reach anything
+      # else.
+      - name: Set up deploy key for the private watermark submodule
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.WATERMARK_PREMIUM_DEPLOY_KEY }}" > ~/.ssh/watermark_premium_deploy
+          chmod 600 ~/.ssh/watermark_premium_deploy
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          {
+            echo "Host github.com"
+            echo "  IdentityFile ~/.ssh/watermark_premium_deploy"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -81,7 +100,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: wasm-build
     steps:
+      # See wasm-build's identical step for why this exists.
+      - name: Set up deploy key for the private watermark submodule
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.WATERMARK_PREMIUM_DEPLOY_KEY }}" > ~/.ssh/watermark_premium_deploy
+          chmod 600 ~/.ssh/watermark_premium_deploy
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          {
+            echo "Host github.com"
+            echo "  IdentityFile ~/.ssh/watermark_premium_deploy"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

@@ -16,7 +16,11 @@ import { OpenApps, asyncBackedStore } from "@openapps/sdk";
 import type { Session } from "@openapps/sdk";
 import { ext } from "../platform/webext";
 
-const OPENAPPS_BASE_URL = "https://accounts.openapps.network";
+export const OPENAPPS_BASE_URL = "https://accounts.openapps.network";
+// openapps-gateway holds the app key for paid features (see
+// editor.ts's Supporter watermark unlock) — never reachable with just
+// the user token this extension holds, only through this service.
+export const OPENAPPS_GATEWAY_URL = "https://gateway.openapps.network";
 const KEY = "openapps.session";
 
 export const store = asyncBackedStore(

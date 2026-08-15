@@ -8,8 +8,10 @@
 // build, since PDF page geometry is exactly the kind of pixel-correctness
 // code the project keeps in Rust — see wasm-loader below.
 import { EDITOR_IMAGE_PORT_NAME } from "../chrome/blob-store";
+import { client as openappsClient, ready as openappsReady, store as openappsStore, OPENAPPS_BASE_URL, OPENAPPS_GATEWAY_URL } from "../chrome/openapps-session";
 import { saveOutput } from "../chrome/save";
 import { clearWatermarkLogoDataUrl, getWatermarkLogoDataUrl, setWatermarkLogoDataUrl } from "../chrome/watermark-logo-store";
+import { applyWatermarkPattern, drawWatermarkCell, type WatermarkLocation } from "../../vendor-private/watermark-premium/src/watermark";
 import init, * as ShotCore from "../wasm-gen/shot_core.js";
 import { ext } from "../platform/webext";
 
@@ -618,121 +620,11 @@ function drawTextShape(target: CanvasRenderingContext2D, shape: { rect: Rect; va
   target.fillText(shape.value, shape.rect.x, shape.rect.y);
 }
 
-type WatermarkLocation = "top" | "bottom" | "top-bottom" | "full";
-
-/** One instance into a given (unrotated) box: logo (if any) fills the top
- * preserving its own aspect ratio, text (if any) sits below it, or
- * centered alone if there's no logo. White fill with a black stroke
- * rather than a single solid color, since a watermark has to stay legible
- * over whatever's underneath it — a capture can be light or dark at that
- * exact spot and there's no way to know which in advance. `textScale`
- * multiplies the otherwise-automatic font size, so the user can size text
- * up or down without fighting the box-fitting logic below. */
-function drawWatermarkCell(target: CanvasRenderingContext2D, rect: Rect, text: string, logoBitmap: ImageBitmap | null, opacity: number, textScale: number): void {
-  target.save();
-  target.globalAlpha = opacity;
-  const logoAreaHeight = logoBitmap && text ? rect.height * 0.6 : rect.height;
-  let textTop = rect.y;
-  if (logoBitmap) {
-    const scale = Math.min(rect.width / logoBitmap.width, logoAreaHeight / logoBitmap.height);
-    const w = logoBitmap.width * scale;
-    const h = logoBitmap.height * scale;
-    target.drawImage(logoBitmap, rect.x + (rect.width - w) / 2, rect.y + (logoAreaHeight - h) / 2, w, h);
-    textTop = rect.y + logoAreaHeight;
-  }
-  if (text) {
-    const textAreaHeight = rect.y + rect.height - textTop;
-    const fontSize = Math.max(10, Math.min(textAreaHeight * 0.7, (rect.width / Math.max(1, text.length)) * 1.7)) * textScale;
-    target.font = `${fontSize}px system-ui, sans-serif`;
-    target.textAlign = "center";
-    target.textBaseline = "middle";
-    target.lineWidth = Math.max(2, fontSize / 8);
-    target.strokeStyle = "#000000";
-    target.fillStyle = "#ffffff";
-    const tx = rect.x + rect.width / 2;
-    const ty = textTop + textAreaHeight / 2;
-    target.strokeText(text, tx, ty);
-    target.fillText(text, tx, ty);
-  }
-  target.restore();
-}
-
-/** One tile's box size, proportional to the capture's own width so it
- * reads consistently regardless of resolution. Shared by watermarkBands()
- * (band height = one row's worth) and drawWatermarkTile() (grid spacing),
- * so the two stay in lockstep by construction. */
-function watermarkCellSize(): { width: number; height: number } {
-  const width = Math.max(40, Math.round(canvas.width * 0.16));
-  const height = Math.max(24, Math.round(width * 0.5));
-  return { width, height };
-}
-
-/** Which band(s) of the canvas a watermark pattern covers, in
- * canvas-buffer coordinates. "full" tiles the whole page (many rows);
- * "top"/"bottom"/"top-bottom" are each sized to exactly one tile's
- * height, so they read as a single line of repeated watermarks at that
- * edge rather than a filled strip — "top and bottom" is one row at the
- * very top plus one independent row at the very bottom, never a block of
- * several rows at each end. */
-function watermarkBands(location: WatermarkLocation): Rect[] {
-  if (location === "full") return [{ x: 0, y: 0, width: canvas.width, height: canvas.height }];
-  const cell = watermarkCellSize();
-  if (location === "top") return [{ x: 0, y: 0, width: canvas.width, height: Math.min(cell.height, canvas.height) }];
-  if (location === "bottom") {
-    const height = Math.min(cell.height, canvas.height);
-    return [{ x: 0, y: canvas.height - height, width: canvas.width, height }];
-  }
-  // top-bottom: two independent single-row bands, never touching even on
-  // an unusually short capture.
-  const height = Math.min(cell.height, Math.floor(canvas.height / 2));
-  return [
-    { x: 0, y: 0, width: canvas.width, height },
-    { x: 0, y: canvas.height - height, width: canvas.width, height },
-  ];
-}
-
-/** Repeats one watermark cell in a grid across `band`, each instance
- * rotated in place around its own center rather than the band being
- * rotated as a whole — this is what keeps the tiling grid itself
- * axis-aligned (so it reliably covers corners and edges) while the
- * *content* reads as a diagonal stamp, matching how tiled watermarks
- * ordinarily look. Negative rotation for a "rising" bottom-left-to-
- * top-right diagonal, the conventional direction. */
-function drawWatermarkTile(target: CanvasRenderingContext2D, band: Rect, text: string, logoBitmap: ImageBitmap | null, opacity: number, orientationDeg: 0 | 45, textScale: number): void {
-  const cell = watermarkCellSize();
-  const gapX = cell.width * 0.5;
-  const gapY = cell.height * 0.5;
-  const strideX = cell.width + gapX;
-  const strideY = cell.height + gapY;
-  const cols = Math.max(1, Math.ceil(band.width / strideX));
-  const rows = Math.max(1, Math.ceil(band.height / strideY));
-  const angle = (-orientationDeg * Math.PI) / 180;
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const cx = band.x + gapX / 2 + col * strideX + cell.width / 2;
-      const cy = band.y + gapY / 2 + row * strideY + cell.height / 2;
-      target.save();
-      target.translate(cx, cy);
-      if (angle) target.rotate(angle);
-      drawWatermarkCell(target, { x: -cell.width / 2, y: -cell.height / 2, width: cell.width, height: cell.height }, text, logoBitmap, opacity, textScale);
-      target.restore();
-    }
-  }
-}
-
-/** The watermark tool's whole effect: bakes a tiled pattern directly into
- * `ctx` across one or more bands, no adjustable pending-shape stage first.
- * Unlike arrow/rect/text/blur, a pattern that can span the entire capture
- * has nothing sensible left to drag — the old single-instance,
- * corner-placed, resizable version this replaced only ever made sense
- * because it covered a small fixed area. */
-function applyWatermarkPattern(location: WatermarkLocation, orientationDeg: 0 | 45, text: string, logoBitmap: ImageBitmap | null, opacity: number, textScale: number): void {
-  const bands = watermarkBands(location);
-  const regions = bands.map((band) => ({ x: band.x, y: band.y, data: ctx.getImageData(band.x, band.y, band.width, band.height) }));
-  undoStack.push({ kind: "regions", regions });
-  if (undoStack.length > MAX_HISTORY) undoStack.shift();
-  for (const band of bands) drawWatermarkTile(ctx, band, text, logoBitmap, opacity, orientationDeg, textScale);
-}
+// Watermark rendering (drawWatermarkCell, applyWatermarkPattern, and the
+// tiling math behind them) lives in vendor-private/watermark-premium — a
+// private module, not part of this AGPL codebase, gating the Supporter
+// feature. See that module's own README for why, and the panel wiring
+// further down this file for the sign-in/unlock flow around it.
 
 // The pending shape (and its handles) draws on previewCanvas, never on
 // the real canvas — nothing here is applied until commitPendingShape().
@@ -1228,17 +1120,175 @@ watermarkAddBtn.addEventListener("click", async () => {
   const textScale = Number(watermarkTextSizeEl.value) / 100;
   if (!text && !watermarkLogoBitmap) return; // belt-and-suspenders; the button is disabled for this case already
   if (pendingShape) commitPendingShape(); // bake whatever was already pending first, same as switching tools
-  applyWatermarkPattern(location, orientationDeg, text, watermarkLogoBitmap, opacity, textScale);
+  // The private module only renders — it doesn't know this page's undo
+  // stack shape, so it hands back the pre-draw snapshot of each band and
+  // this is what pushes it as a single "regions" undo entry.
+  const regions = applyWatermarkPattern(ctx, canvas.width, canvas.height, location, orientationDeg, text, watermarkLogoBitmap, opacity, textScale);
+  undoStack.push({ kind: "regions", regions });
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
   closeWatermarkPanel();
   selectTool("select");
 });
+
+// --- watermark: Supporter gate -------------------------------------------
+//
+// The watermark tool is OpenCapture's one paid feature — a one-time,
+// 1000-credit unlock via openapps-gateway (see that crate's README for why
+// this is a deduct that isn't a "deduct proxy": it charges for granting a
+// server-verifiable entitlement, not for a claimed local job). Every other
+// tool in this editor works with no account at all; clicking Watermark is
+// the only place any of this is ever checked.
+
+const SUPPORTER_REF_ID = "opencapture_supporter_unlock";
+
+const watermarkGatePanel = document.getElementById("watermarkGatePanel")!;
+const watermarkGateMessageEl = document.getElementById("watermarkGateMessage")!;
+const watermarkGateCancelBtn = document.getElementById("watermarkGateCancel") as HTMLButtonElement;
+const watermarkGateActionBtn = document.getElementById("watermarkGateAction") as HTMLButtonElement;
+
+type WatermarkGateState =
+  | { kind: "checking" }
+  | { kind: "signed-out" }
+  | { kind: "locked" }
+  | { kind: "unlocking" }
+  | { kind: "insufficient"; have: number; need: number }
+  | { kind: "error"; message: string };
+
+function openAccountTab(): void {
+  ext.tabs.create({ url: ext.runtime.getURL("account.html") });
+}
+
+function renderWatermarkGate(state: WatermarkGateState): void {
+  watermarkGatePanel.hidden = false;
+  watermarkGateActionBtn.hidden = false;
+  watermarkGateActionBtn.disabled = false;
+  switch (state.kind) {
+    case "checking":
+      watermarkGateMessageEl.textContent = "Checking your account…";
+      watermarkGateActionBtn.hidden = true;
+      break;
+    case "signed-out":
+      watermarkGateMessageEl.textContent = "The watermark tool is a Supporter feature. Sign in to unlock it — 1000 credits, one time.";
+      watermarkGateActionBtn.textContent = "Sign in";
+      watermarkGateActionBtn.onclick = () => {
+        closeWatermarkGate();
+        openAccountTab();
+      };
+      break;
+    case "locked":
+      watermarkGateMessageEl.textContent = "The watermark tool is a Supporter feature — 1000 credits, one time, unlocks it for good.";
+      watermarkGateActionBtn.textContent = "Unlock for 1000 credits";
+      watermarkGateActionBtn.onclick = () => void handleUnlockClick();
+      break;
+    case "unlocking":
+      watermarkGateMessageEl.textContent = "Unlocking…";
+      watermarkGateActionBtn.disabled = true;
+      break;
+    case "insufficient":
+      watermarkGateMessageEl.textContent = `You have ${state.have.toLocaleString()} credits — unlocking Supporter costs ${state.need.toLocaleString()}.`;
+      watermarkGateActionBtn.textContent = "Buy credits";
+      watermarkGateActionBtn.onclick = () => {
+        closeWatermarkGate();
+        openAccountTab();
+      };
+      break;
+    case "error":
+      watermarkGateMessageEl.textContent = state.message;
+      watermarkGateActionBtn.textContent = "Try again";
+      watermarkGateActionBtn.onclick = () => void handleWatermarkToolClick();
+      break;
+  }
+}
+
+function closeWatermarkGate(): void {
+  watermarkGatePanel.hidden = true;
+}
+
+watermarkGateCancelBtn.addEventListener("click", closeWatermarkGate);
+
+/** Read-only: has this account already redeemed the Supporter unlock?
+ * Calls openapps-server directly (no app key needed — it only ever
+ * answers about the caller's own ledger), not the gateway, which is only
+ * for the one route that actually spends credits. */
+async function isSupporterUnlocked(): Promise<boolean> {
+  const token = openappsStore.get()?.accessToken;
+  if (!token) return false;
+  try {
+    const res = await fetch(`${OPENAPPS_BASE_URL}/v1/credits/entitlement?ref_id=${encodeURIComponent(SUPPORTER_REF_ID)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { unlocked?: boolean };
+    return body.unlocked === true;
+  } catch {
+    return false;
+  }
+}
+
+type UnlockResult =
+  | { ok: true; newBalance: number }
+  | { ok: false; kind: "insufficient_credits"; have: number; need: number }
+  | { ok: false; kind: "other"; message: string };
+
+/** The one place this extension ever spends credits. Talks to
+ * openapps-gateway, never openapps-server directly — the gateway is what
+ * holds the app key that turns a user token into an actual charge. */
+async function unlockSupporter(): Promise<UnlockResult> {
+  const token = openappsStore.get()?.accessToken;
+  if (!token) return { ok: false, kind: "other", message: "not signed in" };
+  try {
+    const res = await fetch(`${OPENAPPS_GATEWAY_URL}/opencapture/supporter/unlock`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = (await res.json()) as { new_balance?: number; have?: number; need?: number; error?: string };
+    if (res.ok && typeof body.new_balance === "number") return { ok: true, newBalance: body.new_balance };
+    if (res.status === 402 && typeof body.have === "number" && typeof body.need === "number") {
+      return { ok: false, kind: "insufficient_credits", have: body.have, need: body.need };
+    }
+    return { ok: false, kind: "other", message: body.error ?? "unlock failed" };
+  } catch {
+    return { ok: false, kind: "other", message: "network" };
+  }
+}
+
+async function handleUnlockClick(): Promise<void> {
+  renderWatermarkGate({ kind: "unlocking" });
+  const result = await unlockSupporter();
+  if (result.ok) {
+    closeWatermarkGate();
+    void openWatermarkPanel();
+    return;
+  }
+  if (result.kind === "insufficient_credits") {
+    renderWatermarkGate({ kind: "insufficient", have: result.have, need: result.need });
+    return;
+  }
+  renderWatermarkGate({ kind: "error", message: "Couldn't unlock — please try again." });
+}
+
+async function handleWatermarkToolClick(): Promise<void> {
+  renderWatermarkGate({ kind: "checking" });
+  await openappsReady;
+  if (!openappsClient.isLoggedIn) {
+    renderWatermarkGate({ kind: "signed-out" });
+    return;
+  }
+  const unlocked = await isSupporterUnlocked();
+  if (unlocked) {
+    closeWatermarkGate();
+    void openWatermarkPanel();
+    return;
+  }
+  renderWatermarkGate({ kind: "locked" });
+}
 
 // --- toolbar / load / save --------------------------------------------------
 
 toolButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     if (btn.dataset["tool"] === "watermark") {
-      void openWatermarkPanel();
+      void handleWatermarkToolClick();
       return;
     }
     selectTool(btn.dataset["tool"] as Tool);

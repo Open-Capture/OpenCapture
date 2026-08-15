@@ -1,0 +1,3 @@
+[submodule "apps/extension/vendor-private/watermark-premium"]
+	path = apps/extension/vendor-private/watermark-premium
+	url = git@github.com:Open-Capture/opencapture-watermark-premium.git

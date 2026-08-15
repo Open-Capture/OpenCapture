@@ -39,7 +39,10 @@ copy, or annotate it.
 - **Watermark tool** — tile your own text and/or logo across the top,
   bottom, both, or the entire page, at 0° or a 45° slant. This is a tool
   *you* apply to *your own* exports for your own branding — OpenCapture
-  never stamps anything onto your screenshots itself.
+  never stamps anything onto your screenshots itself. The one paid part of
+  OpenCapture: a one-time, 1000-credit Supporter unlock. Every other
+  feature — capture, crop, arrow, rectangle, text, blur, PNG/PDF export —
+  is free with no account at all.
 - **Export PNG or PDF** — PDF pages are sized in points to match CSS
   pixels, so they print at true 1:1 physical size.
 - **Copy to clipboard**, configurable save folder/filename, and a capture
@@ -56,7 +59,7 @@ other.
 
 | Tool | Price | Processed locally, no cloud upload | Account required | Annotation tools | PDF export | Open source |
 |---|---|---|---|---|---|---|
-| **OpenCapture** | Free | ✅ Always | ❌ No | Crop, arrow, rect, text, blur, tiled watermark | ✅ | ✅ AGPL-3.0 |
+| **OpenCapture** | Free (watermark: 1000 credits, one-time) | ✅ Always | ❌ No for everything except watermark | Crop, arrow, rect, text, blur, tiled watermark¹ | ✅ | ✅ AGPL-3.0 |
 | [GoFullPage](https://gofullpage.com) | Free | ✅ | ❌ No | ❌ None | ❌ | Partial — legacy core is MIT; the shipped build now runs from a private branch |
 | [FireShot](https://getfireshot.com) | Free (Lite) / $60 lifetime or $7.95/mo (Pro) | – Unconfirmed | ❌ No (Lite) | Limited free, full set in Pro | Pro only | ❌ |
 | [Lightshot](https://app.prntscr.com) | Free | ❌ — uploads to a public server; short guessable URLs have exposed other users' screenshots | ❌ No (optional gallery account) | Basic (arrow, text, box) | ❌ | ❌ |
@@ -66,14 +69,19 @@ other.
 | [CloudApp / Zight](https://zight.com) | Free tier / ~$8–17/mo | ❌ Cloud-native by design | Yes | Basic | – | ❌ |
 | [Loom](https://loom.com) | Free tier (capped) / paid | ❌ Cloud-native by design | Yes | Minimal (screenshots are secondary to video) | ❌ | ❌ |
 
+¹ The only paid part of OpenCapture — a one-time, 1000-credit Supporter
+unlock, not a subscription or a per-export charge. Crop/arrow/rect/text/
+blur and PNG/PDF export are free with no account.
+
 The pattern that stands out: **local-only and open source rarely coexist**
 in this space. GoFullPage matches OpenCapture on "local, no account" but
 has no annotation tools at all and its current build isn't verifiably
 open; Lightshot's "no account needed" comes at the cost of a real,
 documented privacy failure in its cloud upload. OpenCapture is, as far as
-this research could confirm, the only option that's simultaneously free,
-fully local, requires no account, ships a full annotation toolset with
-PDF export, and is open source under a copyleft license.
+this research could confirm, the only option that's simultaneously fully
+local, open source under a copyleft license, and free for every feature
+except one optional, one-time watermark unlock — with no account needed
+for anything else.
 
 ## Status
 

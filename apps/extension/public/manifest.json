@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OpenCapture — Private Full-Page Screenshot",
+  "name": "OpenCapture \u2014 Private Full-Page Screenshot",
   "version": "0.1.0",
-  "description": "100% local full-page screenshots. No cloud upload, no watermark, no paywall.",
+  "description": "100% local full-page screenshots. No cloud upload. All core features free; the watermark tool is a paid Supporter feature.",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -20,15 +20,25 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "scripting", "downloads", "storage"],
-  "host_permissions": ["https://accounts.openapps.network/*"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://accounts.openapps.network/*",
+    "https://gateway.openapps.network/*"
+  ],
   "content_scripts": [
     {
       "matches": [
         "https://accounts.openapps.network/v1/auth/oidc/google/callback*",
         "https://accounts.openapps.network/signin*"
       ],
-      "js": ["openapps-callback.js"],
+      "js": [
+        "openapps-callback.js"
+      ],
       "run_at": "document_idle"
     }
   ],

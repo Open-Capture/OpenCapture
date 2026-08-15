@@ -1411,6 +1411,22 @@ test("watermark tool: tiled pattern respects location/orientation, remembers the
     await globalThis.__test.captureVisibleOnly(winId);
   }, windowId);
 
+  // Bypass the Supporter gate: seed a fake signed-in session *before* the
+  // editor page loads (its own openapps store only hydrates once, from
+  // whatever chrome.storage.session holds at that first read — writing to
+  // it after the page has already loaded would not be picked up), and mock
+  // the entitlement check as already-unlocked. The gate itself has its own
+  // dedicated tests below; this test is about the watermark panel's own
+  // behavior once past it.
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.set({
+      "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
+    });
+  });
+  await context.route("https://accounts.openapps.network/v1/credits/entitlement*", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ unlocked: true }) }),
+  );
+
   const [editorPage] = await Promise.all([
     context.waitForEvent("page"),
     serviceWorker.evaluate(async () => {
@@ -1533,6 +1549,107 @@ test("watermark tool: tiled pattern respects location/orientation, remembers the
   // for the panel to actually close before sampling.
   await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
   expect(regionsDiffer(baselineFull, await sampleRegion(fullRect))).toBe(true);
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("watermark tool: signed-out click shows the Supporter sign-in gate, not the panel", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  // No session seeded — a genuinely fresh, signed-out profile.
+  await editorPage.click("#toolWatermark");
+  await expect(editorPage.locator("#watermarkGatePanel")).toBeVisible();
+  await expect(editorPage.locator("#watermarkGateMessage")).toContainText("Sign in");
+  await expect(editorPage.locator("#watermarkGateAction")).toHaveText("Sign in");
+  // The real configuration panel — logo/text/location/etc. — must never
+  // appear before the gate is satisfied.
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  await editorPage.close();
+  await page.close();
+});
+
+test("watermark tool: signed in but not yet Supporter shows the 1000-credit unlock prompt", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.set({
+      "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
+    });
+  });
+  await context.route("https://accounts.openapps.network/v1/credits/entitlement*", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ unlocked: false }) }),
+  );
+  // The unlock click itself: refused for insufficient credits, so this
+  // also covers the "buy credits" branch of the gate in one pass.
+  await context.route("https://gateway.openapps.network/opencapture/supporter/unlock", (route) =>
+    route.fulfill({ status: 402, contentType: "application/json", body: JSON.stringify({ have: 100, need: 1000 }) }),
+  );
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  await editorPage.click("#toolWatermark");
+  await expect(editorPage.locator("#watermarkGateMessage")).toContainText("1000");
+  await expect(editorPage.locator("#watermarkGateAction")).toHaveText("Unlock for 1000 credits");
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
+
+  await editorPage.click("#watermarkGateAction");
+  await expect(editorPage.locator("#watermarkGateMessage")).toContainText("100");
+  await expect(editorPage.locator("#watermarkGateAction")).toHaveText("Buy credits");
+  // Still never the real panel — an insufficient-credits refusal must not
+  // let the tool through.
+  await expect(editorPage.locator("#watermarkPanel")).toBeHidden();
 
   await editorPage.close();
   await page.close();
