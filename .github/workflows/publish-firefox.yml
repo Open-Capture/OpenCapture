@@ -1,0 +1,51 @@
+name: Publish to Firefox Add-ons
+
+# Triggered by a version tag (v0.1.1, v0.2.0, ...) so a release is a
+# deliberate, reviewed act — bump the version in package.json and
+# manifest.firefox.json, commit, tag, push the tag. workflow_dispatch is
+# there for re-running a publish (e.g. after AMO rejected a submission
+# and it needs resubmitting) without cutting a new tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  WASM_BINDGEN_VERSION: "0.2.100"
+
+jobs:
+  publish-firefox:
+    name: build, sign, submit to AMO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (pinned)
+        run: cargo install wasm-bindgen-cli --version ${{ env.WASM_BINDGEN_VERSION }} --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/extension/package-lock.json
+      - run: npm ci
+        working-directory: apps/extension
+      # web-ext reads the version to submit straight out of
+      # dist-firefox/manifest.json — bump it in manifest.firefox.json (and
+      # package.json, to keep them matching) before tagging, or AMO
+      # rejects the upload as a duplicate of whatever's already live.
+      - name: Sign and submit to addons.mozilla.org
+        run: npm run publish:firefox
+        working-directory: apps/extension
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+      - name: Upload the signed .xpi as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-xpi
+          path: apps/extension/web-ext-artifacts/*.xpi
+          if-no-files-found: warn
