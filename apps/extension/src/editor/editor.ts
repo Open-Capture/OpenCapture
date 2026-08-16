@@ -1267,20 +1267,37 @@ async function handleUnlockClick(): Promise<void> {
   renderWatermarkGate({ kind: "error", message: "Couldn't unlock — please try again." });
 }
 
+// Also called automatically (see the visibilitychange and storage
+// listeners below) whenever this tab might have gone from signed-out or
+// locked to unlocked while it was in the background. Without the two
+// guards below, a trigger that fires while an earlier call is still
+// awaiting the entitlement check — or after the watermark panel is
+// already open — would run a second, overlapping check that reopens
+// openWatermarkPanel() and resets the text field mid-edit; each
+// straggler resolving at its own pace is what made typing look like it
+// randomly stopped getting eaten "after a while".
+let watermarkGateCheckInFlight = false;
+
 async function handleWatermarkToolClick(): Promise<void> {
-  renderWatermarkGate({ kind: "checking" });
-  await openappsReady;
-  if (!openappsClient.isLoggedIn) {
-    renderWatermarkGate({ kind: "signed-out" });
-    return;
+  if (watermarkGateCheckInFlight || !watermarkPanel.hidden) return;
+  watermarkGateCheckInFlight = true;
+  try {
+    renderWatermarkGate({ kind: "checking" });
+    await openappsReady;
+    if (!openappsClient.isLoggedIn) {
+      renderWatermarkGate({ kind: "signed-out" });
+      return;
+    }
+    const unlocked = await isSupporterUnlocked();
+    if (unlocked) {
+      closeWatermarkGate();
+      void openWatermarkPanel();
+      return;
+    }
+    renderWatermarkGate({ kind: "locked" });
+  } finally {
+    watermarkGateCheckInFlight = false;
   }
-  const unlocked = await isSupporterUnlocked();
-  if (unlocked) {
-    closeWatermarkGate();
-    void openWatermarkPanel();
-    return;
-  }
-  renderWatermarkGate({ kind: "locked" });
 }
 
 // openappsClient here was constructed once at page load and hydrated from
