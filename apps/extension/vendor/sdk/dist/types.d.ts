@@ -146,10 +146,21 @@ export interface LightningInvoice {
 }
 export interface LedgerEntry {
     id: number;
+    /** Signed: positive added credits, negative spent them. */
     amount: number;
+    /** `topup` | `debit` | `referral_bonus` | `adjustment` | `refund`. */
     kind: string;
     ref_type: string | null;
+    /**
+     * What it was for. On a debit this is the `reason` the app passed to
+     * `deduct` — the feature name — which is the finest-grained answer to
+     * "where did my credits go".
+     */
     ref_id: string | null;
+    /** Which app charged it. Null for top-ups, bonuses and adjustments. */
+    app_id: string | null;
+    /** That app's display name, so a UI need not keep its own lookup table. */
+    app_name: string | null;
     balance_after: number;
     created_at: number;
 }

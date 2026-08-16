@@ -21,6 +21,20 @@ let OpenAppsBuy = class OpenAppsBuy extends OpenAppsElement {
         super(...arguments);
         /** Restrict the offered rails, e.g. `rails="lightning,stripe"`. */
         this.rails = "";
+        /**
+         * Where Stripe returns the browser after checkout.
+         *
+         * Empty (the default) comes back to this page, which is what a web app
+         * wants. `none` ends on the server's own confirmation page instead — for
+         * a host that cannot be redirected to at all, which is every browser
+         * extension: Chrome refuses to land a cross-origin redirect on a
+         * `chrome-extension://` page. Anything else is used verbatim.
+         *
+         * Without this, an extension had to hand-roll its own Stripe button and
+         * restrict this element to the other rails, which is how one payment
+         * surface turns into two that look nothing alike.
+         */
+        this.returnTo = "";
         this.packages = null;
         this.selected = null;
         this.instruction = null;
@@ -79,12 +93,27 @@ let OpenAppsBuy = class OpenAppsBuy extends OpenAppsElement {
             let topupId;
             switch (rail) {
                 case "stripe": {
-                    // Defaults to returning here, so the purchase ends on this page.
-                    const checkout = await this.sdk.payments.stripeCheckout(pkg.id);
+                    // `none` means "do not try to come back here"; empty means the
+                    // SDK's default of this page.
+                    const checkout = await this.sdk.payments.stripeCheckout(pkg.id, {
+                        returnTo: this.returnTo === "none" ? null : this.returnTo || undefined,
+                    });
                     this.instruction = { kind: "redirect" };
                     // Stripe hosts the card form; we hand the browser over and the
                     // webhook credits the account whether or not the user comes back.
-                    window.location.href = checkout.checkout_url;
+                    //
+                    // Cancelable, so a host that must not navigate its own window —
+                    // an extension page, which is destroyed the moment it does — can
+                    // open the URL its own way instead. Everyone else gets the
+                    // navigation by doing nothing.
+                    const handled = !this.dispatchEvent(new CustomEvent("openapps-checkout", {
+                        detail: { url: checkout.checkout_url, packageId: pkg.id },
+                        cancelable: true,
+                        bubbles: true,
+                        composed: true,
+                    }));
+                    if (!handled)
+                        window.location.href = checkout.checkout_url;
                     return;
                 }
                 case "ethereum": {
@@ -383,6 +412,9 @@ let OpenAppsBuy = class OpenAppsBuy extends OpenAppsElement {
 __decorate([
     property({ type: String })
 ], OpenAppsBuy.prototype, "rails", void 0);
+__decorate([
+    property({ type: String, attribute: "return-to" })
+], OpenAppsBuy.prototype, "returnTo", void 0);
 __decorate([
     state()
 ], OpenAppsBuy.prototype, "packages", void 0);

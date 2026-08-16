@@ -13,6 +13,20 @@ export declare class OpenAppsBuy extends OpenAppsElement {
     #private;
     /** Restrict the offered rails, e.g. `rails="lightning,stripe"`. */
     rails: string;
+    /**
+     * Where Stripe returns the browser after checkout.
+     *
+     * Empty (the default) comes back to this page, which is what a web app
+     * wants. `none` ends on the server's own confirmation page instead — for
+     * a host that cannot be redirected to at all, which is every browser
+     * extension: Chrome refuses to land a cross-origin redirect on a
+     * `chrome-extension://` page. Anything else is used verbatim.
+     *
+     * Without this, an extension had to hand-roll its own Stripe button and
+     * restrict this element to the other rails, which is how one payment
+     * surface turns into two that look nothing alike.
+     */
+    returnTo: string;
     private packages;
     private selected;
     private instruction;

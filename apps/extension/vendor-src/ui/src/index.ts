@@ -48,5 +48,14 @@ export { OpenAppsCredits } from "./openapps-credits.js";
 export { OpenAppsHistory } from "./openapps-history.js";
 export { OpenAppsReferral } from "./openapps-referral.js";
 export { OpenAppsBuy } from "./openapps-buy.js";
-export { availableNamespaces, connectEthereum, findNostrProvider, signNostr, signNostrWithBunker, signNostrWithSecretKey, signSiwe, waitForNostrProvider, WalletError, } from "./wallet.js";
-//# sourceMappingURL=index.js.map
+export {
+  availableNamespaces,
+  connectEthereum,
+  findNostrProvider,
+  signNostr,
+  signNostrWithBunker,
+  signNostrWithSecretKey,
+  signSiwe,
+  waitForNostrProvider,
+  WalletError,
+} from "./wallet.js";

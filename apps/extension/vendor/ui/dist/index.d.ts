@@ -9,11 +9,12 @@
  *
  * <openapps-login></openapps-login>
  * <openapps-credits poll-seconds="30"></openapps-credits>
+ * <openapps-history></openapps-history>
  * <openapps-buy></openapps-buy>
  * <openapps-referral></openapps-referral>
  * ```
  *
- * Importing this module registers all three custom elements. They share one
+ * Importing this module registers every custom element. They share one
  * client, so signing in with `<openapps-login>` updates the balance shown by
  * `<openapps-credits>` and unlocks `<openapps-buy>` with no glue code.
  *
@@ -44,6 +45,7 @@ export { OpenAppsElement } from "./base.js";
 export { OpenAppsLogin } from "./openapps-login.js";
 export { OpenAppsAccount } from "./openapps-account.js";
 export { OpenAppsCredits } from "./openapps-credits.js";
+export { OpenAppsHistory } from "./openapps-history.js";
 export { OpenAppsReferral } from "./openapps-referral.js";
 export { OpenAppsBuy } from "./openapps-buy.js";
 export { availableNamespaces, connectEthereum, findNostrProvider, signNostr, signNostrWithBunker, signNostrWithSecretKey, signSiwe, waitForNostrProvider, WalletError, } from "./wallet.js";
