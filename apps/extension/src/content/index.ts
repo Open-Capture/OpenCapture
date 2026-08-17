@@ -6,7 +6,7 @@
 // docs/architecture.md.
 //
 // Message protocol (background -> content, request/response):
-//   {action:"prep"}                    -> {metrics, pinnedElementsHandled, lazyImagesForced, warnings}
+//   {action:"prep"}                    -> {metrics, innerScrollRect, pinnedElementsHandled, lazyImagesForced, warnings}
 //   {action:"scrollTo", targetCss}     -> {actualScrollCss}
 //   {action:"restore"}                 -> {ok:true}
 //   {action:"selectArea"}              -> {rect: {x,y,width,height} | null, dpr}  (null = user cancelled)
@@ -36,6 +36,62 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
 
   let pinnedElements: Array<{ el: HTMLElement; kind: PinnedKind; originalVisibility: string }> = [];
   let totalHeightCss = 0;
+  // Set for the duration of one capture (prep -> scrollTo* -> restore) when
+  // detectDominantScroller finds a container worth driving instead of the
+  // window — see that function and handlePrep's use of it.
+  let innerScroller: HTMLElement | null = null;
+
+  // Finds the single scrollable descendant most likely to be "the real
+  // content" on a page with double scrollbars — a big inner pane (a
+  // dashboard's main column, a docs site's content frame) that scrolls
+  // independently of the outer page, which itself barely moves. Full-page
+  // capture normally drives the outer page scroll only, so on a page like
+  // this it only ever shows whatever that inner pane happened to display
+  // at the top — the rest of its content is never brought into view at all.
+  //
+  // Deliberately narrow: picks at most one container, the largest by
+  // on-screen area among elements that (a) actually overflow
+  // (scrollHeight - clientHeight is more than a rounding error) and
+  // (b) are set to scroll (overflow-y auto/scroll) and (c) cover a
+  // substantial share of the viewport, so a small scrolling widget (a
+  // code block, a chat sidebar) never gets mistaken for the main content.
+  // Multiple independent scrollers, or a scroller nested inside another,
+  // aren't handled — the largest single match wins, everything else is
+  // left exactly as window-only capture already treats it.
+  function detectDominantScroller(): HTMLElement | null {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let best: HTMLElement | null = null;
+    let bestArea = 0;
+    for (const el of document.body?.querySelectorAll("*") ?? []) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (el.scrollHeight - el.clientHeight < 50) continue;
+      const style = window.getComputedStyle(el);
+      if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < vw * 0.5 || rect.height < vh * 0.5) continue;
+      const area = rect.width * rect.height;
+      if (area > bestArea) {
+        bestArea = area;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  // Same idea as primingScrollPass, for the inner container instead of the
+  // window — without this, lazy-loaded content further down the inner
+  // scroller's own content never gets a chance to load before capture.
+  async function primeInnerScroller(el: HTMLElement): Promise<void> {
+    const step = el.clientHeight;
+    const original = el.scrollTop;
+    for (let y = el.scrollHeight; y >= 0; y -= step) {
+      el.scrollTo({ top: y, behavior: "instant" });
+      await sleep(60);
+    }
+    el.scrollTo({ top: original, behavior: "instant" });
+    await sleep(60);
+  }
 
   function forceEagerLoading(): number {
     let count = 0;
@@ -160,30 +216,52 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
   async function handlePrep() {
     const lazyImagesForced = forceEagerLoading();
     await primingScrollPass();
+
+    innerScroller = detectDominantScroller();
+    if (innerScroller) await primeInnerScroller(innerScroller);
+
     await waitForImagesAndQuiet();
-    classifyPinnedElements();
     injectFreezeStyle();
 
-    const doc = document.scrollingElement ?? document.documentElement;
-    totalHeightCss = doc.scrollHeight;
-    const metrics = {
-      viewportWidthCss: window.innerWidth,
-      viewportHeightCss: window.innerHeight,
-      totalHeightCss,
-      dpr: window.devicePixelRatio || 1,
-    };
-
-    applyPinnedVisibility(true, totalHeightCss <= window.innerHeight);
+    // Pinned-element handling (classify/hide fixed+sticky chrome so it
+    // doesn't repeat in every slice) is specific to window-scroll capture:
+    // it reasons about elements fixed relative to the *window* viewport,
+    // which never moves at all in inner-scroll mode. Anything outside the
+    // inner container's own rect is cropped away regardless (see
+    // orchestrator.ts); anything sticky *within* the container isn't
+    // handled in this MVP — see detectDominantScroller's own comment.
+    let metrics: { viewportWidthCss: number; viewportHeightCss: number; totalHeightCss: number; dpr: number };
+    let innerScrollRect: { x: number; y: number; width: number; height: number } | null = null;
+    const dpr = window.devicePixelRatio || 1;
+    if (innerScroller) {
+      totalHeightCss = innerScroller.scrollHeight;
+      const rect = innerScroller.getBoundingClientRect();
+      innerScrollRect = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+      metrics = { viewportWidthCss: rect.width, viewportHeightCss: innerScroller.clientHeight, totalHeightCss, dpr };
+    } else {
+      classifyPinnedElements();
+      const doc = document.scrollingElement ?? document.documentElement;
+      totalHeightCss = doc.scrollHeight;
+      metrics = { viewportWidthCss: window.innerWidth, viewportHeightCss: window.innerHeight, totalHeightCss, dpr };
+      applyPinnedVisibility(true, totalHeightCss <= window.innerHeight);
+    }
 
     return {
       metrics,
+      innerScrollRect,
       pinnedElementsHandled: pinnedElements.length,
       lazyImagesForced,
-      warnings: [] as string[],
+      warnings: innerScroller ? ["Captured an inner scrolling area on this page instead of the full window."] : ([] as string[]),
     };
   }
 
   async function handleScrollTo(targetCss: number) {
+    if (innerScroller) {
+      innerScroller.scrollTo({ top: targetCss, behavior: "instant" });
+      await sleep(2 * 16 + 150);
+      return { actualScrollCss: innerScroller.scrollTop };
+    }
+
     window.scrollTo({ top: targetCss, behavior: "instant" });
     await sleep(2 * 16 + 150);
 
@@ -201,7 +279,12 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
   }
 
   function handleRestore() {
-    restorePinnedElements();
+    if (innerScroller) {
+      innerScroller.scrollTop = 0;
+      innerScroller = null;
+    } else {
+      restorePinnedElements();
+    }
     removeFreezeStyle();
     return { ok: true as const };
   }
@@ -218,6 +301,16 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
   // capture the visible tab once, and crop. A scrollable-page selection tool
   // is a distinct, more complex feature (has to reconcile the selection with
   // the scroll/stitch pipeline) and isn't in this MVP's scope.
+  //
+  // Two phases, not one straight-through drag: "drawing" (no rect yet, or
+  // actively dragging one out) and "adjusting" (a rect exists, idle,
+  // waiting for Enter/Esc/a further drag). Finalizing on mouseup used to
+  // mean one imprecise drag was the only chance to get the rect right —
+  // this lets that first drag be a rough pass, then fine-tune corners or
+  // reposition the whole box before committing.
+  const HANDLE_CORNERS = ["nw", "ne", "sw", "se"] as const;
+  type Corner = (typeof HANDLE_CORNERS)[number];
+
   function handleSelectArea(): Promise<{ rect: SelectedRect | null; dpr: number }> {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
@@ -227,70 +320,218 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
       selBox.style.cssText =
         "position:fixed;border:2px solid #4f7cff;background:rgba(79,124,255,0.15);display:none;z-index:2147483647;pointer-events:none;";
       const hint = document.createElement("div");
-      hint.textContent = "Drag to select an area — Esc to cancel";
       hint.style.cssText =
         "position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#222;color:#fff;" +
-        "padding:6px 12px;border-radius:6px;font:13px system-ui, sans-serif;z-index:2147483647;pointer-events:none;";
-      document.documentElement.append(overlay, selBox, hint);
+        "padding:6px 12px;border-radius:6px;font:13px system-ui, sans-serif;z-index:2147483647;pointer-events:none;white-space:nowrap;";
 
-      let startX = 0;
-      let startY = 0;
-      let dragging = false;
+      const HANDLE_SIZE = 10;
+      const HANDLE_CURSORS: Record<Corner, string> = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize" };
+      const handles = {} as Record<Corner, HTMLDivElement>;
+      for (const corner of HANDLE_CORNERS) {
+        const h = document.createElement("div");
+        h.style.cssText =
+          `position:fixed;width:${HANDLE_SIZE}px;height:${HANDLE_SIZE}px;border-radius:50%;` +
+          `background:#fff;border:2px solid #4f7cff;z-index:2147483647;display:none;cursor:${HANDLE_CURSORS[corner]};`;
+        handles[corner] = h;
+      }
+      document.documentElement.append(overlay, selBox, ...HANDLE_CORNERS.map((c) => handles[c]), hint);
+
+      type DragMode = "new" | "move" | { corner: Corner } | null;
+      let phase: "drawing" | "adjusting" = "drawing";
+      let rect: SelectedRect | null = null;
+      let dragMode: DragMode = null;
+      let dragStartX = 0;
+      let dragStartY = 0;
+      let dragStartRect: SelectedRect | null = null;
       let settled = false;
+
+      function setHint(text: string): void {
+        hint.textContent = text;
+      }
+
+      function positionSelBox(r: SelectedRect): void {
+        selBox.style.left = `${r.x}px`;
+        selBox.style.top = `${r.y}px`;
+        selBox.style.width = `${r.width}px`;
+        selBox.style.height = `${r.height}px`;
+        const half = HANDLE_SIZE / 2;
+        handles.nw.style.left = `${r.x - half}px`;
+        handles.nw.style.top = `${r.y - half}px`;
+        handles.ne.style.left = `${r.x + r.width - half}px`;
+        handles.ne.style.top = `${r.y - half}px`;
+        handles.sw.style.left = `${r.x - half}px`;
+        handles.sw.style.top = `${r.y + r.height - half}px`;
+        handles.se.style.left = `${r.x + r.width - half}px`;
+        handles.se.style.top = `${r.y + r.height - half}px`;
+      }
+
+      function showHandles(show: boolean): void {
+        for (const corner of HANDLE_CORNERS) handles[corner].style.display = show ? "block" : "none";
+      }
+
+      function enterDrawing(): void {
+        phase = "drawing";
+        rect = null;
+        selBox.style.display = "none";
+        selBox.style.pointerEvents = "none";
+        showHandles(false);
+        setHint("Drag to select an area — Esc to cancel");
+      }
+
+      function enterAdjusting(r: SelectedRect): void {
+        phase = "adjusting";
+        rect = r;
+        positionSelBox(r);
+        selBox.style.display = "block";
+        selBox.style.pointerEvents = "auto";
+        selBox.style.cursor = "move";
+        showHandles(true);
+        setHint("Drag to adjust — Enter to confirm, Esc to reselect");
+      }
 
       function cleanup(): void {
         document.removeEventListener("keydown", onKeyDown, true);
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
         overlay.remove();
         selBox.remove();
         hint.remove();
+        for (const corner of HANDLE_CORNERS) handles[corner].remove();
       }
 
-      function finish(rect: SelectedRect | null): void {
+      function finish(finalRect: SelectedRect | null): void {
         if (settled) return;
         settled = true;
         cleanup();
-        // One repaint cycle so the overlay is actually gone from the frame
-        // captureVisibleTab reads a moment later.
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve({ rect, dpr: window.devicePixelRatio || 1 })));
+        // One repaint cycle so the overlay/handles are actually gone from
+        // the frame captureVisibleTab reads a moment later.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => resolve({ rect: finalRect, dpr: window.devicePixelRatio || 1 })),
+        );
+      }
+
+      // Drag deltas can push a corner past the opposite one (dragging the
+      // top edge below the bottom edge, etc.) — normalize rather than
+      // clamp, so the box flips through zero cleanly instead of sticking.
+      function normalizeRect(r: SelectedRect): SelectedRect {
+        let { x, y, width, height } = r;
+        if (width < 0) {
+          x += width;
+          width = -width;
+        }
+        if (height < 0) {
+          y += height;
+          height = -height;
+        }
+        return { x, y, width, height };
       }
 
       function onKeyDown(e: KeyboardEvent): void {
-        if (e.key === "Escape") finish(null);
-      }
-      document.addEventListener("keydown", onKeyDown, true);
-
-      overlay.addEventListener("mousedown", (e) => {
-        dragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        selBox.style.display = "block";
-        selBox.style.left = `${startX}px`;
-        selBox.style.top = `${startY}px`;
-        selBox.style.width = "0px";
-        selBox.style.height = "0px";
-      });
-      overlay.addEventListener("mousemove", (e) => {
-        if (!dragging) return;
-        const x = Math.min(startX, e.clientX);
-        const y = Math.min(startY, e.clientY);
-        selBox.style.left = `${x}px`;
-        selBox.style.top = `${y}px`;
-        selBox.style.width = `${Math.abs(e.clientX - startX)}px`;
-        selBox.style.height = `${Math.abs(e.clientY - startY)}px`;
-      });
-      overlay.addEventListener("mouseup", (e) => {
-        if (!dragging) return;
-        dragging = false;
-        const x = Math.min(startX, e.clientX);
-        const y = Math.min(startY, e.clientY);
-        const width = Math.abs(e.clientX - startX);
-        const height = Math.abs(e.clientY - startY);
-        if (width < 3 || height < 3) {
+        if (e.key === "Escape") {
+          if (phase === "adjusting") {
+            enterDrawing();
+            return;
+          }
           finish(null);
           return;
         }
-        finish({ x, y, width, height });
+        if (e.key === "Enter" && phase === "adjusting" && rect) {
+          finish(rect);
+        }
+      }
+      document.addEventListener("keydown", onKeyDown, true);
+
+      // Starting a fresh drag always wins, even mid-adjust — discards
+      // whatever was being fine-tuned and draws a new box from scratch.
+      overlay.addEventListener("mousedown", (e) => {
+        dragMode = "new";
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        enterDrawing();
+        selBox.style.display = "block";
+        selBox.style.left = `${dragStartX}px`;
+        selBox.style.top = `${dragStartY}px`;
+        selBox.style.width = "0px";
+        selBox.style.height = "0px";
       });
+
+      for (const corner of HANDLE_CORNERS) {
+        handles[corner].addEventListener("mousedown", (e) => {
+          e.stopPropagation(); // don't also trigger overlay's "start a new box"
+          dragMode = { corner };
+          dragStartX = e.clientX;
+          dragStartY = e.clientY;
+          dragStartRect = rect;
+        });
+      }
+      selBox.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        dragMode = "move";
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        dragStartRect = rect;
+      });
+
+      function onMove(e: MouseEvent): void {
+        if (dragMode === "new") {
+          const x = Math.min(dragStartX, e.clientX);
+          const y = Math.min(dragStartY, e.clientY);
+          const width = Math.abs(e.clientX - dragStartX);
+          const height = Math.abs(e.clientY - dragStartY);
+          selBox.style.left = `${x}px`;
+          selBox.style.top = `${y}px`;
+          selBox.style.width = `${width}px`;
+          selBox.style.height = `${height}px`;
+          return;
+        }
+        if (!dragStartRect) return;
+        if (dragMode === "move") {
+          const dx = e.clientX - dragStartX;
+          const dy = e.clientY - dragStartY;
+          rect = { ...dragStartRect, x: dragStartRect.x + dx, y: dragStartRect.y + dy };
+          positionSelBox(rect);
+          return;
+        }
+        if (dragMode && typeof dragMode === "object") {
+          const dx = e.clientX - dragStartX;
+          const dy = e.clientY - dragStartY;
+          let { x, y, width, height } = dragStartRect;
+          if (dragMode.corner.includes("n")) {
+            y += dy;
+            height -= dy;
+          }
+          if (dragMode.corner.includes("s")) height += dy;
+          if (dragMode.corner.includes("w")) {
+            x += dx;
+            width -= dx;
+          }
+          if (dragMode.corner.includes("e")) width += dx;
+          rect = normalizeRect({ x, y, width, height });
+          positionSelBox(rect);
+        }
+      }
+      document.addEventListener("mousemove", onMove);
+
+      function onUp(e: MouseEvent): void {
+        if (dragMode === "new") {
+          const x = Math.min(dragStartX, e.clientX);
+          const y = Math.min(dragStartY, e.clientY);
+          const width = Math.abs(e.clientX - dragStartX);
+          const height = Math.abs(e.clientY - dragStartY);
+          dragMode = null;
+          if (width < 3 || height < 3) {
+            finish(null);
+            return;
+          }
+          enterAdjusting({ x, y, width, height });
+          return;
+        }
+        dragMode = null;
+        dragStartRect = null;
+      }
+      document.addEventListener("mouseup", onUp);
+
+      enterDrawing();
     });
   }
 

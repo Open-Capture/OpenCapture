@@ -9,8 +9,11 @@
 // code the project keeps in Rust — see wasm-loader below.
 import { EDITOR_IMAGE_PORT_NAME } from "../chrome/blob-store";
 import { copyPngBytesToClipboard } from "../chrome/copy-image";
+import { getSavedDirectoryHandle } from "../chrome/dir-handle-store";
 import { client as openappsClient, ready as openappsReady, store as openappsStore, OPENAPPS_BASE_URL, OPENAPPS_GATEWAY_URL } from "../chrome/openapps-session";
+import { pickDirectory } from "../chrome/pick-directory";
 import { saveOutput } from "../chrome/save";
+import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
 import { clearWatermarkLogoDataUrl, getWatermarkLogoDataUrl, setWatermarkLogoDataUrl } from "../chrome/watermark-logo-store";
 import { applyWatermarkPattern, drawWatermarkCell, type WatermarkLocation } from "../../vendor-private/watermark-premium/src/watermark";
 import init, * as ShotCore from "../wasm-gen/shot_core.js";
@@ -1395,6 +1398,58 @@ function canvasPngBytes(): Promise<Uint8Array> {
     }, "image/png");
   });
 }
+
+// Where PNG/PDF exports land — saveOutput() (chrome/save.ts) already reads
+// the same getSavePrefs()/getSavedDirectoryHandle() the popup's own
+// "Save to" fieldset writes, so this panel is a second place to see and
+// change the *same* setting, not a separate one. Mirrors popup.ts's own
+// loadSavePrefs/persistSavePrefs/refreshCustomFolder exactly.
+const saveSettingsBtn = document.getElementById("saveSettingsBtn") as HTMLButtonElement;
+const saveSettingsLabel = document.getElementById("saveSettingsLabel")!;
+const saveSettingsPanel = document.getElementById("saveSettingsPanel")!;
+const editorPrefFilenameEl = document.getElementById("editorPrefFilename") as HTMLInputElement;
+const editorCustomFolderNameEl = document.getElementById("editorCustomFolderName")!;
+const editorBrowseFolderBtn = document.getElementById("editorBrowseFolder") as HTMLButtonElement;
+
+// Same as popup.ts: showDirectoryPicker() (Chromium-only) has no Firefox
+// equivalent at all, so hide the button entirely rather than showing
+// something that can only error.
+if (!("showDirectoryPicker" in window)) {
+  editorBrowseFolderBtn.style.display = "none";
+}
+
+async function refreshSaveSettingsUi(): Promise<void> {
+  const [prefs, handle] = await Promise.all([getSavePrefs(), getSavedDirectoryHandle()]);
+  editorPrefFilenameEl.placeholder = prefs.filename;
+  editorPrefFilenameEl.value = prefs.filename === "opencapture" ? "" : prefs.filename;
+  const folderLabel = handle ? handle.name : "Your Downloads folder (default)";
+  editorCustomFolderNameEl.textContent = folderLabel;
+  saveSettingsLabel.textContent = handle ? handle.name : "Downloads";
+}
+
+async function persistEditorSavePrefs(): Promise<void> {
+  await setSavePrefs({
+    folder: "",
+    filename: editorPrefFilenameEl.value.trim() || "opencapture",
+  });
+  await refreshSaveSettingsUi();
+}
+
+editorPrefFilenameEl.addEventListener("change", () => void persistEditorSavePrefs());
+
+editorBrowseFolderBtn.addEventListener("click", async () => {
+  const result = await pickDirectory();
+  if (!result.ok && !result.cancelled) {
+    setStatus(`Couldn't set that folder: ${result.error}`);
+  }
+  await refreshSaveSettingsUi();
+});
+
+saveSettingsBtn.addEventListener("click", () => {
+  saveSettingsPanel.hidden = !saveSettingsPanel.hidden;
+});
+
+void refreshSaveSettingsUi();
 
 // Called directly, not routed through the service worker — same reasoning
 // as popup.ts's own copy button (see chrome/copy-image.ts): the clipboard

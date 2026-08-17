@@ -35,6 +35,12 @@ export interface PrepResponse {
   pinnedElementsHandled: number;
   lazyImagesForced: number;
   warnings: string[];
+  // Set when the page has an inner scrollable container dominant enough
+  // (see content/index.ts's detectDominantScroller) that it's more useful
+  // to capture its full scrolled content than just what the outer page
+  // scroll shows. CSS px, viewport-relative — orchestrator.ts crops every
+  // slice to this rect instead of using the whole captured viewport.
+  innerScrollRect: SelectedRect | null;
 }
 
 export interface ScrollToResponse {

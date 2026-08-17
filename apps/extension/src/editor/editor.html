@@ -87,6 +87,40 @@
         position: absolute;
         pointer-events: none;
       }
+      #saveSettingsBtn {
+        max-width: 160px;
+      }
+      #saveSettingsBtn span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #editorCustomFolderRow {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+      }
+      #editorCustomFolderName {
+        flex: 1;
+        min-width: 0;
+      }
+      #saveSettingsPanel {
+        position: absolute;
+        top: calc(var(--space-2) + 44px);
+        left: var(--space-4);
+        z-index: 1000;
+        width: 280px;
+        padding: var(--space-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+      }
+      /* [hidden]'s UA display:none loses to the unconditional display:flex
+         above on specificity alone — this ID+[hidden] selector outranks
+         it. Same trap every other panel in this file avoids the same way. */
+      #saveSettingsPanel[hidden] {
+        display: none;
+      }
       #watermarkPanel {
         position: absolute;
         top: calc(var(--space-2) + 44px);
@@ -232,6 +266,10 @@
       <button id="undo" class="icon-btn" title="Undo">
         <span class="oa-icon icon-undo-2"></span>
       </button>
+      <button id="saveSettingsBtn" class="btn btn-secondary btn-sm" title="Change where this saves">
+        <span class="oa-icon oa-icon-14 icon-folder-open"></span>
+        <span id="saveSettingsLabel">Downloads</span>
+      </button>
       <div class="toolbar-divider"></div>
       <button id="copyToClipboard" class="btn btn-secondary btn-sm">
         <span class="oa-icon oa-icon-14 icon-copy"></span>
@@ -255,6 +293,24 @@
       <button id="splitNoticeClose" type="button" class="icon-btn" title="Dismiss">
         <span class="oa-icon oa-icon-14 icon-x"></span>
       </button>
+    </div>
+    <div id="saveSettingsPanel" class="card" hidden>
+      <label class="field">
+        <span class="field-label">Filename</span>
+        <span class="field-control">
+          <input id="editorPrefFilename" type="text" placeholder="opencapture" />
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">Folder</span>
+        <div id="editorCustomFolderRow">
+          <span id="editorCustomFolderName" class="field-hint">Your Downloads folder (default)</span>
+          <button id="editorBrowseFolder" type="button" class="btn btn-secondary btn-sm">
+            <span class="oa-icon oa-icon-14 icon-folder-open"></span>
+            Browse…
+          </button>
+        </div>
+      </label>
     </div>
     <div id="watermarkGatePanel" class="card" hidden>
       <p>Supporter feature</p>

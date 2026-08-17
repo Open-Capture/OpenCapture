@@ -55,6 +55,7 @@ export async function captureFullPage(tabId: number, windowId: number): Promise<
 
   const prep = await sendToContent<PrepResponse>(tabId, { action: "prep" });
   const metrics: PageMetrics = prep.metrics;
+  const innerRect = prep.innerScrollRect;
 
   const targets = shotCore.scrollTargets(metrics.totalHeightCss, metrics.viewportHeightCss) as Float64Array;
 
@@ -65,7 +66,23 @@ export async function captureFullPage(tabId: number, windowId: number): Promise<
       action: "scrollTo",
       targetCss: target,
     });
-    const pngBytes = await captureVisibleTabPaced(windowId);
+    let pngBytes = await captureVisibleTabPaced(windowId);
+    // Dominant-inner-scroller mode (see content/index.ts's
+    // detectDominantScroller): captureVisibleTabPaced still returns the
+    // whole browser viewport, most of which — anything outside the inner
+    // container's own on-screen rect — never changes between slices, since
+    // it's the container's content that scrolled, not the page. Crop each
+    // slice down to just that rect before it reaches the stitcher, the
+    // same cropAndEncode() a selected-area capture uses, so what gets
+    // stitched is exactly analogous to window-scroll capture: a
+    // fixed-size frame whose content changed by a known scroll delta.
+    if (innerRect) {
+      const xDev = Math.round(innerRect.x * metrics.dpr);
+      const yDev = Math.round(innerRect.y * metrics.dpr);
+      const widthDev = Math.round(innerRect.width * metrics.dpr);
+      const heightDev = Math.round(innerRect.height * metrics.dpr);
+      pngBytes = shotCore.cropAndEncode(pngBytes, xDev, yDev, widthDev, heightDev, metrics.dpr) as Uint8Array;
+    }
     session.pushSlice(actualScrollCss, pngBytes);
   }
 

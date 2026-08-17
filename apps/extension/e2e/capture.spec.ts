@@ -112,6 +112,64 @@ test("full-page capture stitches a long page without duplicated or missing bands
   await page.close();
 });
 
+test("full-page capture on a page with an inner scroller captures its full content, not just what's visible at the top", async ({
+  context,
+  serviceWorker,
+}) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/inner-scroll.html`);
+
+  const tabId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}; open tabs: ${JSON.stringify(tabs.map((t) => t.url))}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const result = await serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    },
+    { tabId: tabId.tabId, windowId: tabId.windowId },
+  );
+
+  // The outer page (80px header + 500px scroll box = 580px) fits inside
+  // the 600px-tall viewport on its own — a naive window-scroll capture
+  // would need exactly one slice and would only ever show whatever
+  // #scrollBox displayed at scrollTop 0 (its first ~500px of content).
+  // 2000px of output height only happens if the inner container's own
+  // 20 bands x 100px were actually driven and stitched, not the window.
+  expect(result.report.output_height_px).toBe(2000);
+  expect(result.report.output_width_px).toBe(800);
+  expect(result.report.warnings).toContain("Captured an inner scrolling area on this page instead of the full window.");
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "inner-scroll.png", result.imagesBase64[0]);
+
+  const info = JSON.parse(shotQa(["png-info", pngPath]).stdout);
+  expect(info.width).toBe(800);
+  expect(info.height).toBe(2000);
+
+  // Same golden per-band assertion ruler-3000's test uses — every one of
+  // the 20 bands generated *inside* #scrollBox, at its exact row and
+  // color, proves the whole inner container was captured in order with
+  // no duplicated or skipped slice.
+  const bandSample = shotQa(["band-sample", pngPath, "--bands", "20", "--band-height", "100", "--x", "10", "--y-offset", "50"]);
+  expect(bandSample.code).toBe(0);
+  const bands = JSON.parse(bandSample.stdout) as Array<{ band: number; r: number; g: number; b: number }>;
+  expect(bands.length).toBe(20);
+  for (const band of bands) {
+    const expectedR = (band.band * 53) % 256;
+    const expectedG = (band.band * 97) % 256;
+    const expectedB = (band.band * 151) % 256;
+    expect(band, `band ${band.band}`).toMatchObject({ r: expectedR, g: expectedG, b: expectedB });
+  }
+
+  await page.close();
+});
+
 test("capturing the same tab twice without a reload doesn't throw a content-script re-injection SyntaxError", async ({
   context,
   serviceWorker,
@@ -268,6 +326,11 @@ test("selected-area capture crops to exactly the dragged rectangle", async ({ co
   await page.mouse.down();
   await page.mouse.move(110, 580, { steps: 5 });
   await page.mouse.up();
+  // The drag alone only lands in the "adjusting" phase now (a resizable/
+  // movable box, not an immediate finalize) — Enter is what actually
+  // confirms it. See the new adjust/reselect test below for that phase
+  // itself.
+  await page.keyboard.press("Enter");
 
   const result = await resultPromise;
   expect(result).not.toBeNull();
@@ -283,6 +346,99 @@ test("selected-area capture crops to exactly the dragged rectangle", async ({ co
 
   const sample = JSON.parse(shotQa(["band-sample", pngPath, "--bands", "1", "--band-height", "1", "--x", "50", "--y-offset", "20"]).stdout)[0];
   expect(sample).toMatchObject({ r: 9, g: 229, b: 243 });
+
+  await page.close();
+});
+
+test("selected-area capture: dragging a resize handle after the initial drag changes the final crop", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const resultPromise = serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureSelectedArea(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  await page.waitForTimeout(200);
+  // Rough initial drag: (10,540) to (110,580) — a deliberately imprecise
+  // first pass, 100x40.
+  await page.mouse.move(10, 540);
+  await page.mouse.down();
+  await page.mouse.move(110, 580, { steps: 5 });
+  await page.mouse.up();
+
+  // Now drag the SE resize handle, whose visible circle is centered right
+  // on the box's bottom-right corner (110,580), out to (150,620) —
+  // enlarging the box by 40px each direction instead of redrawing it.
+  await page.mouse.move(110, 580);
+  await page.mouse.down();
+  await page.mouse.move(150, 620, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.press("Enter");
+
+  const result = await resultPromise;
+  expect(result).not.toBeNull();
+  // 10..150 wide (140), 540..620 tall (80) — the resized box, not the
+  // original 100x40 rough drag.
+  expect(result.report.output_width_px).toBe(140);
+  expect(result.report.output_height_px).toBe(80);
+
+  await page.close();
+});
+
+test("selected-area capture: Esc after a drag clears the selection to reselect, not a full cancel", async ({ context, serviceWorker }) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const tabInfo = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const resultPromise = serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureSelectedArea(tabId, windowId);
+    },
+    tabInfo,
+  );
+
+  await page.waitForTimeout(200);
+  // First pass — deliberately wrong, then abandoned via Esc.
+  await page.mouse.move(10, 10);
+  await page.mouse.down();
+  await page.mouse.move(60, 60, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.press("Escape");
+
+  // If Esc had fully cancelled (the old, pre-adjust-phase behavior), the
+  // promise would already be resolved to null here and this second drag
+  // would race a content script that's already torn itself down. Band 5
+  // again (CSS y=[500,600), rgb(9,229,243)), same as the first test.
+  await page.mouse.move(10, 540);
+  await page.mouse.down();
+  await page.mouse.move(110, 580, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.press("Enter");
+
+  const result = await resultPromise;
+  expect(result).not.toBeNull();
+  expect(result.report.output_width_px).toBe(100);
+  expect(result.report.output_height_px).toBe(40);
 
   await page.close();
 });
@@ -1366,6 +1522,45 @@ test("copy to clipboard: popup writes directly, without a background/offscreen r
 
   await popup.close();
   await page.close();
+});
+
+test("editor: save-settings panel shows the default folder and persists a filename", async ({ context, extensionId }) => {
+  // Opened directly, no prior capture — editor.ts's loadImage() handles a
+  // null image gracefully (shows a status message, doesn't throw), and
+  // this test is only about the toolbar chrome, not a loaded capture.
+  const editor = await context.newPage();
+  await editor.goto(`chrome-extension://${extensionId}/editor.html`);
+
+  await expect(editor.locator("#saveSettingsLabel")).toHaveText("Downloads");
+  await expect(editor.locator("#saveSettingsPanel")).toBeHidden();
+
+  await editor.click("#saveSettingsBtn");
+  await expect(editor.locator("#saveSettingsPanel")).toBeVisible();
+  await expect(editor.locator("#editorCustomFolderName")).toHaveText("Your Downloads folder (default)");
+
+  await editor.fill("#editorPrefFilename", "my-custom-name");
+  await editor.locator("#editorPrefFilename").dispatchEvent("change");
+
+  // Persisted to the same storage popup.ts's own filename field reads —
+  // reopening the editor (a fresh document, same as a real close+reopen)
+  // proves it's actually durable, not just left in this input's own value.
+  await editor.close();
+  const editor2 = await context.newPage();
+  await editor2.goto(`chrome-extension://${extensionId}/editor.html`);
+  await expect(editor2.locator("#editorPrefFilename")).toHaveValue("my-custom-name");
+
+  await editor2.click("#saveSettingsBtn");
+  await expect(editor2.locator("#saveSettingsPanel")).toBeVisible();
+
+  // Reset so no other test in this worker session sees the custom filename
+  // — done here, panel still open, not after closing it (the field lives
+  // inside the panel; a fill() against a hidden element just hangs).
+  await editor2.fill("#editorPrefFilename", "");
+  await editor2.locator("#editorPrefFilename").dispatchEvent("change");
+
+  await editor2.click("#saveSettingsBtn");
+  await expect(editor2.locator("#saveSettingsPanel")).toBeHidden();
+  await editor2.close();
 });
 
 test("popup: restores report/preview/enabled buttons after closing and reopening", async ({ context, serviceWorker, extensionId }) => {

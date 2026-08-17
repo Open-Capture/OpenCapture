@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>inner-scroll</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #outerHeader {
+        height: 80px;
+        background: #111;
+        color: #fff;
+        font: 16px monospace;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      #scrollBox {
+        height: 500px;
+        width: 100%;
+        overflow-y: auto;
+      }
+      .band {
+        height: 100px;
+        width: 100%;
+        box-sizing: border-box;
+        color: white;
+        font: 14px monospace;
+        padding-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Fits in a normal viewport on its own (80 + 500 = 580px) — the
+         outer page never needs to scroll at all. All the real content is
+         inside #scrollBox, which does its own independent scrolling —
+         exactly the "double scrollbar" shape a naive window-scroll-only
+         full-page capture only ever shows the top of. -->
+    <div id="outerHeader">Outer page header — never scrolls, should appear in every band sample</div>
+    <div id="scrollBox">
+      <div id="bands"></div>
+    </div>
+    <script>
+      // Same deterministic color formula as ruler-3000.html, so shot-qa
+      // band-sample can assert exact RGB per band inside the inner
+      // scroller — this is the golden test that the whole inner content
+      // was actually captured, not just whatever #scrollBox showed at
+      // scrollTop 0.
+      const BANDS = 20;
+      const container = document.getElementById("bands");
+      for (let i = 0; i < BANDS; i++) {
+        const r = (i * 53) % 256;
+        const g = (i * 97) % 256;
+        const b = (i * 151) % 256;
+        const div = document.createElement("div");
+        div.className = "band";
+        div.style.backgroundColor = `rgb(${r},${g},${b})`;
+        div.textContent = `band ${i} rgb(${r},${g},${b})`;
+        container.appendChild(div);
+      }
+    </script>
+  </body>
+</html>
