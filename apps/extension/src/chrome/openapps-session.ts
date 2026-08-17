@@ -16,7 +16,13 @@ import { OpenApps, asyncBackedStore } from "@openapps/sdk";
 import type { Session } from "@openapps/sdk";
 import { ext } from "../platform/webext";
 
-export const OPENAPPS_BASE_URL = "https://accounts.openapps.network";
+// A CNAME'd custom domain, not the shared OpenApps backend's own — same
+// server, same account/credits database (sessions are bearer tokens, not
+// cookies, so there's no domain-scoped identity to fragment), reached this
+// way purely so sign-in never shows a foreign-looking domain in the
+// address bar. See PLAN.md's custom-domain entry for what this does and
+// doesn't change server-side.
+export const OPENAPPS_BASE_URL = "https://auth.opencapture.app";
 // openapps-gateway holds the app key for paid features (see
 // editor.ts's Supporter watermark unlock) — never reachable with just
 // the user token this extension holds, only through this service.

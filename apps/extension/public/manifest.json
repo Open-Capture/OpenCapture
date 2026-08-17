@@ -27,15 +27,15 @@
     "storage"
   ],
   "host_permissions": [
-    "https://accounts.openapps.network/*",
+    "https://auth.opencapture.app/*",
     "https://gateway.openapps.network/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://accounts.openapps.network/v1/auth/oidc/google/callback*",
-        "https://accounts.openapps.network/signin*",
-        "https://accounts.openapps.network/link*"
+        "https://auth.opencapture.app/v1/auth/oidc/google/callback*",
+        "https://auth.opencapture.app/signin*",
+        "https://auth.opencapture.app/link*"
       ],
       "js": [
         "openapps-callback.js"

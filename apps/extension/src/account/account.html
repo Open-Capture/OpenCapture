@@ -75,7 +75,7 @@
              directly), which rules out Google here; and it never injects
              window.ethereum or window.nostr into an extension page, which
              rules out wallet and Nostr here no matter what the user has
-             installed. On https://accounts.openapps.network/signin all
+             installed. On https://auth.opencapture.app/signin all
              three work, and the session comes back via openapps-callback +
              background.ts. See account.ts. -->
         <div id="signInCard" class="oa-card">
@@ -85,6 +85,16 @@
           <p class="oa-caption">Opens a new tab to sign in with Google, a wallet, or Nostr.</p>
         </div>
         <openapps-credits poll-seconds="30"></openapps-credits>
+        <!-- Deliberately not scoped to OpenCapture with `app-id`. The
+             account is shared across every OpenApps app, so a page that
+             showed only this one's spending would leave a user staring at
+             a balance that had dropped for reasons the page refused to
+             name. The entries say which app charged, so the wider view
+             costs nothing in clarity. -->
+        <div id="historyCard" class="oa-card" hidden>
+          <p>Where your credits go</p>
+          <openapps-history page-size="10"></openapps-history>
+        </div>
         <openapps-account></openapps-account>
         <!-- One payment surface for all three rails. `return-to="none"`
              is what makes card payment possible here: the default is to

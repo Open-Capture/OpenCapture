@@ -266,7 +266,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (openappsMessage?.type !== "openapps:session") return false;
 
   // Origins compared whole, not by prefix: `startsWith` would have counted
-  // https://accounts.openapps.network.evil.test as our own server. Nothing
+  // https://auth.opencapture.app.evil.test as our own server. Nothing
   // could reach it today — the content script only runs on URLs the
   // manifest lists — but this is the check standing between a page and a
   // session, and it should not depend on a second file staying narrow.

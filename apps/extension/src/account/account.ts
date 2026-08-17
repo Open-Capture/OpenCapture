@@ -5,7 +5,7 @@
 // being a separate tab rather than living inside the popup.
 import "@openapps/tokens/tokens.css";
 import { configure } from "@openapps/ui";
-import { client as openappsClient, ready as openappsReady, store as openappsStore } from "../chrome/openapps-session";
+import { OPENAPPS_BASE_URL, client as openappsClient, ready as openappsReady, store as openappsStore } from "../chrome/openapps-session";
 import { ext } from "../platform/webext";
 
 // Shares the same chrome.storage.session-backed store as background.ts's
@@ -19,7 +19,7 @@ import { ext } from "../platform/webext";
 // The store itself is safe to hand over before it finishes hydrating from
 // chrome.storage (that's the whole point of asyncBackedStore): it starts
 // as "no session", then updates and notifies once the persisted one loads.
-configure({ baseUrl: "https://accounts.openapps.network", store: openappsStore });
+configure({ baseUrl: OPENAPPS_BASE_URL, store: openappsStore });
 
 // background.ts adopts a session into this same store from a completely
 // different tab (the OAuth callback one — see openapps-callback/index.ts),
@@ -33,6 +33,7 @@ ext.storage.onChanged.addListener((changes, areaName) => {
 });
 
 const signInCard = document.getElementById("signInCard")!;
+const historyCard = document.getElementById("historyCard")!;
 const buyEl = document.querySelector("openapps-buy")!;
 const signOutBtn = document.getElementById("signOut") as HTMLButtonElement;
 
@@ -109,6 +110,10 @@ document.querySelector("openapps-account")!.addEventListener(
 function render(): void {
   signInCard.hidden = openappsClient.isLoggedIn;
   signOutBtn.hidden = !openappsClient.isLoggedIn;
+  // The element says "sign in to see where your credits went" on its own,
+  // but a heading over that reads as a broken panel. Hiding the whole card
+  // is the honest version of the same message.
+  historyCard.hidden = !openappsClient.isLoggedIn;
 }
 
 (async () => {

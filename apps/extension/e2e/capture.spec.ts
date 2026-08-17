@@ -1736,7 +1736,7 @@ test("watermark tool: tiled pattern respects location/orientation, remembers the
       "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
     });
   });
-  await context.route("https://accounts.openapps.network/v1/credits/entitlement*", (route) =>
+  await context.route("https://auth.opencapture.app/v1/credits/entitlement*", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ unlocked: true }) }),
   );
 
@@ -1930,7 +1930,7 @@ test("watermark tool: signed in but not yet Supporter shows the 1000-credit unlo
       "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
     });
   });
-  await context.route("https://accounts.openapps.network/v1/credits/entitlement*", (route) =>
+  await context.route("https://auth.opencapture.app/v1/credits/entitlement*", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ unlocked: false }) }),
   );
   // The unlock click itself: refused for insufficient credits, so this
@@ -1985,14 +1985,14 @@ test("account page: connecting a wallet or Nostr identity opens /link instead of
       "openapps.session": { accessToken: "e2e-fake-token", refreshToken: "e2e-fake-refresh" },
     });
   });
-  await context.route("https://accounts.openapps.network/v1/auth/methods", (route) =>
+  await context.route("https://auth.opencapture.app/v1/auth/methods", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ methods: { google: true, eip155: true, nostr: true } }),
     }),
   );
-  await context.route("https://accounts.openapps.network/v1/me", (route) =>
+  await context.route("https://auth.opencapture.app/v1/me", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -2004,7 +2004,7 @@ test("account page: connecting a wallet or Nostr identity opens /link instead of
       }),
     }),
   );
-  await context.route("https://accounts.openapps.network/v1/credits/balance", (route) =>
+  await context.route("https://auth.opencapture.app/v1/credits/balance", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ balance: 500 }) }),
   );
   const accountPage = await context.newPage();
@@ -2012,7 +2012,7 @@ test("account page: connecting a wallet or Nostr identity opens /link instead of
   await accountPage.waitForLoadState();
 
   // Stubbed rather than let it really open a tab: this sandbox has no
-  // route to accounts.openapps.network at all, so a real navigation just
+  // route to auth.opencapture.app at all, so a real navigation just
   // hits a Chrome network-error page, which proves nothing either way.
   // What matters is what ext.tabs.create() was *asked* to do — same
   // pattern popup.ts's own download tests already use for
@@ -2033,7 +2033,7 @@ test("account page: connecting a wallet or Nostr identity opens /link instead of
     () => (window as unknown as { __capturedTabCreate: chrome.tabs.CreateProperties[] }).__capturedTabCreate,
   );
   expect(captured).toHaveLength(1);
-  expect(captured[0]?.url).toBe("https://accounts.openapps.network/link");
+  expect(captured[0]?.url).toBe("https://auth.opencapture.app/link");
   // Never navigated the account tab itself, and the doomed in-page
   // wallet.js call never ran (no "no Ethereum wallet found" error here) —
   // the interception genuinely replaced the built-in behavior rather than
