@@ -1,11 +1,12 @@
 import { LAST_CAPTURE_BLOB_KEY, getBlob } from "../chrome/blob-store";
 import { copyPngBytesToClipboard } from "../chrome/copy-image";
 import { getSavedDirectoryHandle } from "../chrome/dir-handle-store";
+import { type LastCaptureUi, getLastCaptureUi } from "../chrome/last-capture-ui";
 import { client as openappsClient, ready as openappsReady } from "../chrome/openapps-session";
 import { pickDirectory } from "../chrome/pick-directory";
 import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
 import { ext } from "../platform/webext";
-import type { CaptureReport, PopupRequest, PopupResponse } from "../types";
+import type { PopupRequest, PopupResponse } from "../types";
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -83,21 +84,12 @@ refreshCustomFolder();
 // lost, even though the underlying capture is still very much there
 // (background/index.ts's orchestrator state, and the image bytes in
 // blob-store under LAST_CAPTURE_BLOB_KEY, both survive independently of
-// this popup's lifetime). This persists just the small bits needed to
-// redraw the same "last capture" UI on next open — the image itself is
-// re-read from blob-store rather than duplicated here, since a capture's
-// PNG can be far too large for chrome.storage.local's 10MB default quota.
-const LAST_CAPTURE_UI_KEY = "lastCaptureUi";
-
-interface LastCaptureUi {
-  report: CaptureReport;
-  openedEditor: boolean;
-}
-
-async function persistLastCaptureUi(ui: LastCaptureUi): Promise<void> {
-  await ext.storage.local.set({ [LAST_CAPTURE_UI_KEY]: ui });
-}
-
+// this popup's lifetime). This redraws the same "last capture" UI on next
+// open from what background/index.ts already persisted (see
+// chrome/last-capture-ui.ts for why that write happens there and not
+// here) — the image itself is re-read from blob-store rather than
+// duplicated into that record, since a capture's PNG can be far too large
+// for chrome.storage.local's 10MB default quota.
 function captureStatusText(ui: LastCaptureUi): string {
   return ui.openedEditor
     ? "Opened in editor — crop, annotate, then choose PNG or PDF to save."
@@ -105,8 +97,7 @@ function captureStatusText(ui: LastCaptureUi): string {
 }
 
 async function restoreLastCaptureUi(): Promise<void> {
-  const stored = await ext.storage.local.get(LAST_CAPTURE_UI_KEY);
-  const ui = stored[LAST_CAPTURE_UI_KEY] as LastCaptureUi | undefined;
+  const ui = await getLastCaptureUi();
   if (!ui) return;
 
   reportEl.style.display = "block";
@@ -162,13 +153,11 @@ async function showCaptureResult(response: PopupResponse): Promise<void> {
       previewEl.style.display = "block";
       previewEl.src = response.pngDataUrls[0];
     }
-    const ui: LastCaptureUi = { report: response.report, openedEditor: response.openedEditor };
-    setStatusText(captureStatusText(ui));
-    // Awaited (not fire-and-forget) so the write is actually issued before
-    // runCapture's finally block returns — the popup can close the moment
-    // the user clicks away, and a dropped write here would silently
-    // recreate the exact bug this feature exists to fix.
-    await persistLastCaptureUi(ui);
+    // background/index.ts already persisted this (see chrome/last-capture-ui.ts)
+    // by the time this response reaches here, if it reaches here at all —
+    // this popup instance might not even be the one that was open when the
+    // capture finished, if the editor tab opening tore the original one down.
+    setStatusText(captureStatusText({ report: response.report, openedEditor: response.openedEditor }));
   } else {
     setStatusText("Done.");
   }
@@ -219,6 +208,12 @@ copyBtn.addEventListener("click", async () => {
 // capture buttons above route "Annotate" to a separate editor tab).
 $("openAccount").addEventListener("click", () => {
   ext.tabs.create({ url: ext.runtime.getURL("account.html") });
+});
+
+// Same reasoning as openAccount above — a grid of past captures needs a
+// real page, not a 380px popup that closes on blur.
+$("openHistory").addEventListener("click", () => {
+  ext.tabs.create({ url: ext.runtime.getURL("history.html") });
 });
 
 (async () => {

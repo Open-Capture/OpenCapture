@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
-// Multi-entry build: popup.html/editor.html/account.html (Vite's native
+// Multi-entry build: popup.html/editor.html/account.html/history.html (Vite's native
 // HTML-entry handling), plus raw TS entries (background service worker,
 // content script, openapps-callback content script). background/index.ts
 // imports freely (the manifest declares it `"type": "module"`, so that's
@@ -45,6 +45,7 @@ export default defineConfig({
         popup: resolve(__dirname, "src/popup/popup.html"),
         editor: resolve(__dirname, "src/editor/editor.html"),
         account: resolve(__dirname, "src/account/account.html"),
+        history: resolve(__dirname, "src/history/history.html"),
         background: resolve(__dirname, "src/background/index.ts"),
         content: resolve(__dirname, "src/content/index.ts"),
         "openapps-callback": resolve(__dirname, "src/openapps-callback/index.ts"),

@@ -8,6 +8,7 @@
 // build, since PDF page geometry is exactly the kind of pixel-correctness
 // code the project keeps in Rust — see wasm-loader below.
 import { EDITOR_IMAGE_PORT_NAME } from "../chrome/blob-store";
+import { copyPngBytesToClipboard } from "../chrome/copy-image";
 import { client as openappsClient, ready as openappsReady, store as openappsStore, OPENAPPS_BASE_URL, OPENAPPS_GATEWAY_URL } from "../chrome/openapps-session";
 import { saveOutput } from "../chrome/save";
 import { clearWatermarkLogoDataUrl, getWatermarkLogoDataUrl, setWatermarkLogoDataUrl } from "../chrome/watermark-logo-store";
@@ -1394,6 +1395,21 @@ function canvasPngBytes(): Promise<Uint8Array> {
     }, "image/png");
   });
 }
+
+// Called directly, not routed through the service worker — same reasoning
+// as popup.ts's own copy button (see chrome/copy-image.ts): the clipboard
+// write must happen in the document that received the real click, and the
+// editor tab is one, same as the popup is.
+document.getElementById("copyToClipboard")!.addEventListener("click", async () => {
+  if (pendingShape) commitPendingShape(); // so the copy matches what's on screen
+  setStatus("Copying to clipboard…");
+  try {
+    await copyPngBytesToClipboard(await canvasPngBytes());
+    setStatus("Copied to clipboard.");
+  } catch (err) {
+    setStatus(`Copy failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+});
 
 document.getElementById("downloadPng")!.addEventListener("click", async () => {
   if (pendingShape) commitPendingShape(); // so the download matches what's on screen

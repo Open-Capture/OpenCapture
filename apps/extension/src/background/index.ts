@@ -1,4 +1,6 @@
 import { EDITOR_IMAGE_BLOB_KEY, EDITOR_IMAGE_PORT_NAME, deleteBlob, getBlob, putBlob } from "../chrome/blob-store";
+import { HISTORY_LIST_PORT_NAME, addHistoryEntry, clearHistory, deleteHistoryEntry, getHistoryEntry, listHistoryEntries } from "../chrome/capture-history";
+import { setLastCaptureUi } from "../chrome/last-capture-ui";
 import { client as openappsClient, ready as openappsReady, store as openappsStore } from "../chrome/openapps-session";
 import { saveOutput } from "../chrome/save";
 import { ext } from "../platform/webext";
@@ -92,6 +94,81 @@ ext.runtime.onConnect.addListener((port) => {
   })();
 });
 
+// Streams the whole history log to history.html: one entryStart/chunk*/
+// entryDone sequence per capture (newest first, so the page can render
+// entries as they arrive instead of waiting for all 50), then a final
+// allDone. Same base64-chunking and same reason as EDITOR_IMAGE_PORT_NAME
+// above — a history entry's bytes are exactly as large as a fresh
+// capture's, and streamed rather than batched into one message so a slow
+// history doesn't hold up rendering the first few entries.
+ext.runtime.onConnect.addListener((port) => {
+  if (port.name !== HISTORY_LIST_PORT_NAME) return;
+  (async () => {
+    const entries = await listHistoryEntries();
+    for (const entry of entries) {
+      const { bytes, ...meta } = entry;
+      port.postMessage({ entryStart: meta });
+      for (let offset = 0; offset < bytes.length; offset += EDITOR_IMAGE_CHUNK_SIZE) {
+        const chunk = bytes.subarray(offset, offset + EDITOR_IMAGE_CHUNK_SIZE);
+        port.postMessage({ chunk: bytesToBase64(chunk) });
+      }
+      port.postMessage({ entryDone: true });
+    }
+    port.postMessage({ allDone: true });
+  })();
+});
+
+// Small, non-image requests from history.html — deleting or clearing
+// entries, and reopening one in the editor (which reuses
+// openEditorWithBytes exactly as a fresh capture does, since by the time
+// the image is out of IndexedDB there's no difference between the two).
+ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  const request = message as { type?: string; id?: number };
+  if (request?.type === "history:delete" && typeof request.id === "number") {
+    deleteHistoryEntry(request.id)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err: unknown) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+  if (request?.type === "history:clear") {
+    clearHistory()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err: unknown) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+  if (request?.type === "history:openInEditor" && typeof request.id === "number") {
+    (async () => {
+      const entry = await getHistoryEntry(request.id!);
+      if (!entry) {
+        sendResponse({ ok: false, error: "That capture is no longer in history." });
+        return;
+      }
+      await openEditorWithBytes(entry.bytes, entry.dpr, 1);
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+  return false;
+});
+
+// Best-effort: a capture the user can already see in the editor shouldn't
+// fail, or even show an error, just because the history log couldn't be
+// written — logged instead of thrown.
+async function rememberInHistory(tab: chrome.tabs.Tab, report: { output_width_px: number; output_height_px: number; dpr: number }, bytes: Uint8Array): Promise<void> {
+  try {
+    await addHistoryEntry({
+      title: tab.title ?? "",
+      url: tab.url ?? "",
+      width: report.output_width_px,
+      height: report.output_height_px,
+      dpr: report.dpr,
+      bytes,
+    });
+  } catch (err) {
+    console.warn("[opencapture] failed to save capture to history", err);
+  }
+}
+
 async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
   switch (request.action) {
     case "captureFullPage": {
@@ -112,12 +189,16 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         // for a single merged file instead of N separate PNGs.
         await Promise.all(images.map((img, i) => saveOutput(img, `-page-${i + 1}-of-${images.length}`, "png", "image/png")));
       }
+      await setLastCaptureUi({ report, openedEditor });
+      await rememberInHistory(tab, report, images[0]!);
       return { ok: true, report, pngDataUrls: images.map((img) => bytesToDataUrl(img, "image/png")), openedEditor };
     }
     case "captureVisible": {
       const tab = await getActiveTab();
       const { report, images } = await captureVisibleOnly(tab.windowId);
       await openEditorWithBytes(images[0]!, report.dpr);
+      await setLastCaptureUi({ report, openedEditor: true });
+      await rememberInHistory(tab, report, images[0]!);
       return { ok: true, report, pngDataUrls: images.map((img) => bytesToDataUrl(img, "image/png")), openedEditor: true };
     }
     case "captureSelectedArea": {
@@ -125,13 +206,18 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       // dragging a selection (normal Chrome popup-blur behavior) — that's
       // fine, this whole flow runs in the background independent of the
       // popup's lifetime, and the editor still opens even though there's
-      // usually no popup left alive to show the result/preview.
+      // usually no popup left alive to show the result/preview. What used
+      // to be lost along with the popup was *this popup's own* memory of
+      // what happened — see last-capture-ui.ts for why that's written here
+      // instead of back in the popup's response handler.
       const tab = await getActiveTab();
       const outcome = await captureSelectedArea(tab.id!, tab.windowId);
       if (!outcome) {
         return { ok: true, cancelled: true };
       }
       await openEditorWithBytes(outcome.images[0]!, outcome.report.dpr);
+      await setLastCaptureUi({ report: outcome.report, openedEditor: true });
+      await rememberInHistory(tab, outcome.report, outcome.images[0]!);
       return {
         ok: true,
         report: outcome.report,

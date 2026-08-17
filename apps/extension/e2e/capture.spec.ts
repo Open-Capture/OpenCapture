@@ -1081,6 +1081,124 @@ test("capturing opens the editor instead of downloading immediately", async ({ c
   await page.close();
 });
 
+test("the popup's last-capture state is written even when no popup exists to write it", async ({ context, serviceWorker, extensionId }) => {
+  // The actual bug this proves fixed: opening the editor tab (as every real
+  // capture does) activates that tab, which tears down a real toolbar
+  // popup before its response handler can run — so persisting "what was
+  // captured" from the popup's own response, awaited or not, is a race the
+  // popup always loses. This test drives the exact same handleRequest()
+  // path a real capture uses, with zero popup page open at any point
+  // (matching the real MV3 popup, which isn't a tab at all — see the
+  // previous test's own comment on why a stand-in tab is wrong here too),
+  // then checks storage directly before ever creating one. If this were
+  // still written from the popup's response handler instead of
+  // background/index.ts, this assertion would fail every time.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id || tab.windowId === undefined) throw new Error(`no tab found for ${url}`);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tab.id, { active: true });
+  }, page.url());
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureVisibleViaHandleRequest();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+
+  const persisted = await serviceWorker.evaluate(async () => {
+    const stored = await chrome.storage.local.get("lastCaptureUi");
+    return stored.lastCaptureUi;
+  });
+  expect(persisted?.openedEditor).toBe(true);
+  expect(persisted?.report?.output_width_px).toBeGreaterThan(0);
+
+  // Now confirm a *freshly opened* popup — the only kind that ever really
+  // exists, per MV3 — restores correctly from exactly that state.
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(popup.locator("#report")).toBeVisible();
+  await expect(popup.locator("#preview")).toBeVisible();
+  await expect(popup.locator("#status")).toHaveText("Opened in editor — crop, annotate, then choose PNG or PDF to save.");
+  await popup.close();
+
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.local.remove("lastCaptureUi");
+  });
+  await editorPage.close();
+  await page.close();
+});
+
+test("history: a real capture appears in history.html, opens back in the editor, and can be deleted", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id || tab.windowId === undefined) throw new Error(`no tab found for ${url}`);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tab.id, { active: true });
+  }, page.url());
+
+  const [firstEditorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureVisibleViaHandleRequest();
+    }),
+  ]);
+  await firstEditorPage.waitForLoadState();
+  await firstEditorPage.close();
+
+  const history = await context.newPage();
+  await history.goto(`chrome-extension://${extensionId}/history.html`);
+
+  const tile = history.locator(".history-tile").first();
+  await expect(tile).toBeVisible();
+  await expect(history.locator(".history-tile")).toHaveCount(1);
+  await expect(tile.locator(".history-tile-sub")).toContainText("800×600");
+  await expect(history.locator("#clearHistory")).toBeVisible();
+  await expect(history.locator("#historyEmpty")).toBeHidden();
+
+  // Reopening a history entry goes through the exact same
+  // openEditorWithBytes() a fresh capture uses — a new editor tab, not a
+  // navigation of this one.
+  const [reopenedEditorPage] = await Promise.all([context.waitForEvent("page"), tile.locator(".history-tile-open").click()]);
+  await reopenedEditorPage.waitForLoadState();
+  await reopenedEditorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+  const canvasSize = await reopenedEditorPage.evaluate(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return { width: c.width, height: c.height };
+  });
+  expect(canvasSize).toEqual({ width: 800, height: 600 });
+  await reopenedEditorPage.close();
+
+  await tile.locator(".history-tile-delete").click();
+  await expect(history.locator(".history-tile")).toHaveCount(0);
+  await expect(history.locator("#historyEmpty")).toBeVisible();
+  await expect(history.locator("#clearHistory")).toBeHidden();
+
+  await history.close();
+  await page.close();
+});
+
 test("save-location preferences (filename) apply to downloads", async ({ context, serviceWorker, extensionId }) => {
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);

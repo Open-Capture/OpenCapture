@@ -29,9 +29,10 @@ function flattenHtmlEntry(nestedRelPath, flatName) {
 flattenHtmlEntry("src/popup/popup.html", "popup.html");
 flattenHtmlEntry("src/editor/editor.html", "editor.html");
 flattenHtmlEntry("src/account/account.html", "account.html");
+flattenHtmlEntry("src/history/history.html", "history.html");
 rmSync(join(distDir, "src"), { recursive: true, force: true });
 
-console.log("copy-static: flattened popup.html/editor.html/account.html");
+console.log("copy-static: flattened popup.html/editor.html/account.html/history.html");
 
 // Vite's `publicDir` copies the whole public/ folder verbatim into
 // outDir, which means BOTH manifest.json (Chrome) and manifest.firefox.json

@@ -1,0 +1,127 @@
+<!doctype html>
+<html class="oa-auto">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenCapture History</title>
+    <link rel="stylesheet" href="../styles/main.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      #historyHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--space-3) var(--space-4);
+        background: var(--surface-card);
+        border-bottom: var(--border-width) solid var(--border-hairline);
+        flex: 0 0 auto;
+        gap: var(--space-3);
+      }
+      #historyHeaderActions {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+      }
+      #historyWrap {
+        flex: 1 1 auto;
+        overflow: auto;
+        padding: var(--space-6) var(--space-4);
+        background: var(--bg-page);
+      }
+      #historyEmpty {
+        text-align: center;
+        margin-top: var(--space-12);
+      }
+      #historyGrid {
+        max-width: 1100px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: var(--space-4);
+      }
+      .history-tile {
+        border: var(--border-width) solid var(--border-hairline);
+        border-radius: var(--radius-lg);
+        background: var(--surface-card);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .history-tile-open {
+        border: 0;
+        padding: 0;
+        margin: 0;
+        cursor: pointer;
+        background: var(--bg-sunken);
+        aspect-ratio: 4 / 3;
+        display: block;
+        width: 100%;
+      }
+      .history-tile-open img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top;
+        display: block;
+      }
+      .history-tile-meta {
+        padding: var(--space-3);
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--space-2);
+      }
+      .history-tile-text {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .history-tile-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-strong);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .history-tile-sub {
+        font-size: 12px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .history-tile-delete {
+        flex: 0 0 auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="historyHeader">
+      <img class="brand-wordmark brand-wordmark-light" src="../assets/logo/wordmark.svg" alt="OpenCapture" height="18" />
+      <img class="brand-wordmark brand-wordmark-dark" src="../assets/logo/wordmark-dark.svg" alt="OpenCapture" height="18" />
+      <div id="historyHeaderActions">
+        <button id="clearHistory" class="btn btn-secondary btn-sm" hidden>
+          <span class="oa-icon oa-icon-14 icon-trash-2"></span>
+          Clear all
+        </button>
+        <button id="closeHistory" type="button" class="icon-btn" title="Close">
+          <span class="oa-icon icon-x"></span>
+        </button>
+      </div>
+    </div>
+    <div id="historyWrap">
+      <p id="historyEmpty" class="oa-caption" hidden>No captures yet — they'll show up here after you capture a page.</p>
+      <div id="historyGrid"></div>
+    </div>
+    <script type="module" src="./history.ts"></script>
+  </body>
+</html>
