@@ -15,6 +15,7 @@ import { pickDirectory } from "../chrome/pick-directory";
 import { saveOutput } from "../chrome/save";
 import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
 import { clearWatermarkLogoDataUrl, getWatermarkLogoDataUrl, setWatermarkLogoDataUrl } from "../chrome/watermark-logo-store";
+import { isDoubleTap, type TapState } from "./double-tap";
 import { applyWatermarkPattern, drawWatermarkCell, type WatermarkLocation } from "../../vendor-private/watermark-premium/src/watermark";
 import init, * as ShotCore from "../wasm-gen/shot_core.js";
 import { ext } from "../platform/webext";
@@ -177,7 +178,7 @@ function displayScale(): number {
   return rect.width > 0 ? canvas.width / rect.width : 1;
 }
 
-function canvasPoint(e: MouseEvent): { x: number; y: number } {
+function canvasPoint(e: { clientX: number; clientY: number }): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   const scale = displayScale();
   return { x: (e.clientX - rect.left) * scale, y: (e.clientY - rect.top) * scale };
@@ -262,7 +263,9 @@ type Rect = { x: number; y: number; width: number; height: number };
 type CropHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type CropDragMode = "draw" | "move" | "resize" | null;
 
-const HANDLE_SIZE = 10; // target on-screen (CSS px) size, not canvas-buffer px
+// See content/index.ts's own isCoarsePointer comment — same reasoning: a
+// touch fingertip needs a bigger target than a mouse cursor does.
+const HANDLE_SIZE = matchMedia("(pointer: coarse)").matches ? 20 : 10; // target on-screen (CSS px) size, not canvas-buffer px
 const AUTO_SCROLL_EDGE = 36; // px from #canvasWrap's edge that triggers scrolling
 const AUTO_SCROLL_MAX_SPEED = 18; // px per animation frame at the very edge
 
@@ -767,7 +770,42 @@ function endShapeDrag(): void {
   shapeDragAnchor = null;
 }
 
-canvas.addEventListener("mousedown", (e) => {
+// Touch has no dblclick — double-clicking an existing pending text shape
+// to re-edit its value (see the old dblclick listener this replaced) is
+// now detected here instead, at the very start of pointerdown, before any
+// of the tool-specific hit-testing below runs. This placement matters: a
+// tap on an existing pending text shape is already fully consumed by this
+// same handler's text-tool branch (via startShapeAdjust, further down),
+// so by the time a hypothetical pointerup-based check ran, shapeDragMode
+// would already be truthy and short-circuit it. Native dblclick avoided
+// this because it fires as its own, separate event after both click
+// cycles complete; Pointer Events have no equivalent, so the check has to
+// preempt the single-tap handling instead of following it.
+let lastTap: TapState = null;
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+
+  if (pendingShape?.kind === "text") {
+    const now = performance.now();
+    if (isDoubleTap(lastTap, now, e.clientX, e.clientY) && pointInRect(pendingShape.rect, canvasPoint(e))) {
+      lastTap = null; // consumed — a third tap right after shouldn't chain into another double-tap
+      const existing = pendingShape;
+      pendingShape = null;
+      clearPreview();
+      // See the single-tap text-creation branch below for why this
+      // preventDefault() is load-bearing: `canvas` isn't focusable, so
+      // without it the browser's own default pointerdown handling blurs
+      // the <input> startTextInput() is about to focus almost immediately
+      // — which fires its blur handler (commit()) and removes it again
+      // before the user (or, here, an e2e test) ever sees it.
+      e.preventDefault();
+      startTextInput({ x: existing.rect.x, y: existing.rect.y }, { x: e.clientX, y: e.clientY }, existing);
+      return;
+    }
+    lastTap = { time: now, x: e.clientX, y: e.clientY };
+  }
+
   const p = canvasPoint(e);
 
   if (currentTool === "crop") {
@@ -817,19 +855,21 @@ canvas.addEventListener("mousedown", (e) => {
       commitPendingShape();
     }
     // `canvas` isn't itself focusable, so the browser's own default
-    // mousedown handling blurs whatever's currently focused once this
+    // pointerdown handling blurs whatever's currently focused once this
     // event finishes — including the <input> startTextInput is about to
     // create and focus, synchronously undoing that focus() call before a
     // single frame renders. This is what actually made the text tool look
     // like it did nothing at all: the input existed for a moment, then
     // lost focus immediately and (per its own blur handler) removed
-    // itself. preventDefault() here is what lets the focus stick.
+    // itself. preventDefault() here is what lets the focus stick (and, as
+    // a side effect, suppresses the synthetic mousedown/click a real touch
+    // tap would otherwise also dispatch for legacy compatibility).
     e.preventDefault();
     startTextInput(p, { x: e.clientX, y: e.clientY });
   }
 });
 
-canvas.addEventListener("mousemove", (e) => {
+canvas.addEventListener("pointermove", (e) => {
   if (currentTool === "crop" && cropDragMode) {
     lastClientPos = { x: e.clientX, y: e.clientY };
     updateCropDrag();
@@ -847,7 +887,7 @@ canvas.addEventListener("mousemove", (e) => {
   else if (shapeDrawKind === "blur") drawCropPreview(previewCtx, dragStart.x, dragStart.y, p.x, p.y);
 });
 
-canvas.addEventListener("mouseup", (e) => {
+canvas.addEventListener("pointerup", (e) => {
   if (currentTool === "crop" && cropDragMode) {
     handleCropMouseUp(pointFromClient(e.clientX, e.clientY));
     return;
@@ -873,19 +913,6 @@ canvas.addEventListener("mouseup", (e) => {
     pendingShape = kind === "rect" ? { kind: "rect", rect } : { kind: "blur", rect };
   }
   renderPendingShape();
-});
-
-// Double-click an existing pending text shape to re-edit its value —
-// single-click (handled above, via hitTestShape) only moves/resizes it,
-// since a plain click is also how a *new* text box gets placed.
-canvas.addEventListener("dblclick", (e) => {
-  if (!pendingShape || pendingShape.kind !== "text") return;
-  const p = canvasPoint(e);
-  if (!pointInRect(pendingShape.rect, p)) return;
-  const existing = pendingShape;
-  pendingShape = null;
-  clearPreview();
-  startTextInput({ x: existing.rect.x, y: existing.rect.y }, { x: e.clientX, y: e.clientY }, existing);
 });
 
 // --- text tool -------------------------------------------------------------

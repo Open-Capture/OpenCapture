@@ -64,6 +64,11 @@
         cursor: crosshair;
         box-shadow: var(--shadow-lg);
         background: #fff;
+        /* Suppresses native touch scroll/pinch while a drag tool is active
+           on the canvas itself — #canvasWrap (above) deliberately keeps its
+           own default touch-action, so panning still works there when no
+           drag is in progress. */
+        touch-action: none;
         /* Fit the window's available width instead of always rendering at
            native pixel size — a retina/high-DPR capture's canvas.width is
            up to 2-3x its CSS px size on the original page, so without this

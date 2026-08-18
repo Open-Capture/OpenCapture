@@ -1083,6 +1083,68 @@ test("text tool creates an editable text box at the clicked position, stays adju
   await page.close();
 });
 
+test("double-clicking a pending text shape re-opens it for editing, pre-filled with its current text", async ({
+  context,
+  serviceWorker,
+}) => {
+  // Touch has no dblclick — editor.ts now detects this itself (see
+  // src/editor/double-tap.ts) from two quick pointerdown events instead of
+  // relying on the browser's native dblclick event. Chromium's mouse
+  // automation dispatches real PointerEvents under the hood, so
+  // page.mouse.dblclick() below exercises that same detection path,
+  // proving the touch-oriented rewrite didn't regress the desktop mouse
+  // case it replaced.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+  await serviceWorker.evaluate(async (winId) => {
+    // @ts-expect-error test-only global, see background/index.ts
+    await globalThis.__test.captureVisibleOnly(winId);
+  }, windowId);
+
+  const [editorPage] = await Promise.all([
+    context.waitForEvent("page"),
+    serviceWorker.evaluate(async () => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.openEditor();
+    }),
+  ]);
+  await editorPage.waitForLoadState();
+  await editorPage.waitForFunction(() => {
+    const c = document.getElementById("canvas") as HTMLCanvasElement;
+    return c.width > 0 && c.height > 0 && (c.width !== 300 || c.height !== 150);
+  });
+
+  const canvasBox = await editorPage.locator("#canvas").boundingBox();
+  if (!canvasBox) throw new Error("canvas has no bounding box");
+  const clickX = canvasBox.x + 200;
+  const clickY = canvasBox.y + 150;
+
+  await editorPage.click("#toolText");
+  await editorPage.mouse.click(clickX, clickY);
+  await editorPage.keyboard.type("hello");
+  await editorPage.keyboard.press("Enter");
+  await expect(editorPage.locator('#canvasStack input[type="text"]')).toHaveCount(0);
+
+  // Still "pending" (not committed — no tool switch happened), same as the
+  // sibling text-tool test above. Double-click it to re-open for editing.
+  await editorPage.mouse.dblclick(clickX, clickY);
+
+  const reopenedInput = editorPage.locator('#canvasStack input[type="text"]');
+  await expect(reopenedInput).toHaveCount(1);
+  await expect(reopenedInput).toHaveValue("hello");
+
+  await editorPage.close();
+  await page.close();
+});
+
 test("select tool moves and resizes a pending shape before it's committed", async ({ context, serviceWorker }) => {
   const page = await context.newPage();
   await page.setViewportSize({ width: 800, height: 600 });

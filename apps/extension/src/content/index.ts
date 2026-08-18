@@ -315,26 +315,53 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(0,0,0,0.15);";
+        "position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(0,0,0,0.15);touch-action:none;";
       const selBox = document.createElement("div");
       selBox.style.cssText =
-        "position:fixed;border:2px solid #4f7cff;background:rgba(79,124,255,0.15);display:none;z-index:2147483647;pointer-events:none;";
+        "position:fixed;border:2px solid #4f7cff;background:rgba(79,124,255,0.15);display:none;z-index:2147483647;pointer-events:none;touch-action:none;";
       const hint = document.createElement("div");
       hint.style.cssText =
         "position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#222;color:#fff;" +
         "padding:6px 12px;border-radius:6px;font:13px system-ui, sans-serif;z-index:2147483647;pointer-events:none;white-space:nowrap;";
 
-      const HANDLE_SIZE = 10;
+      // Touch fingertips are far less precise than a mouse cursor — a 10px
+      // handle that's comfortable to grab with a pointer is nearly
+      // untappable with a finger, so coarse pointers (touch) get a larger
+      // target. Desktop mouse UX (the far more common case) stays pixel-
+      // identical to before.
+      const isCoarsePointer = matchMedia("(pointer: coarse)").matches;
+      const HANDLE_SIZE = isCoarsePointer ? 20 : 10;
       const HANDLE_CURSORS: Record<Corner, string> = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize" };
       const handles = {} as Record<Corner, HTMLDivElement>;
       for (const corner of HANDLE_CORNERS) {
         const h = document.createElement("div");
         h.style.cssText =
           `position:fixed;width:${HANDLE_SIZE}px;height:${HANDLE_SIZE}px;border-radius:50%;` +
-          `background:#fff;border:2px solid #4f7cff;z-index:2147483647;display:none;cursor:${HANDLE_CURSORS[corner]};`;
+          `background:#fff;border:2px solid #4f7cff;z-index:2147483647;display:none;cursor:${HANDLE_CURSORS[corner]};touch-action:none;`;
         handles[corner] = h;
       }
-      document.documentElement.append(overlay, selBox, ...HANDLE_CORNERS.map((c) => handles[c]), hint);
+
+      // Mobile has no Enter/Esc — these two buttons are the touch
+      // equivalent of the keyboard shortcuts below, calling the exact same
+      // finish()/enterDrawing() functions. Shown on both platforms (not
+      // gated behind isCoarsePointer) so they're purely additive: desktop's
+      // keyboard shortcuts keep working completely unchanged.
+      const confirmBtn = document.createElement("div");
+      confirmBtn.style.cssText =
+        "position:fixed;width:44px;height:44px;border-radius:50%;display:none;z-index:2147483647;" +
+        "background:#2e7d32;color:#fff;align-items:center;justify-content:center;font:20px/1 system-ui, sans-serif;" +
+        "cursor:pointer;touch-action:none;box-shadow:0 2px 6px rgba(0,0,0,0.35);";
+      confirmBtn.textContent = "✓";
+      confirmBtn.setAttribute("aria-label", "Confirm selection");
+      const cancelBtn = document.createElement("div");
+      cancelBtn.style.cssText =
+        "position:fixed;width:44px;height:44px;border-radius:50%;display:none;z-index:2147483647;" +
+        "background:#444;color:#fff;align-items:center;justify-content:center;font:20px/1 system-ui, sans-serif;" +
+        "cursor:pointer;touch-action:none;box-shadow:0 2px 6px rgba(0,0,0,0.35);";
+      cancelBtn.textContent = "✕";
+      cancelBtn.setAttribute("aria-label", "Reselect");
+
+      document.documentElement.append(overlay, selBox, ...HANDLE_CORNERS.map((c) => handles[c]), confirmBtn, cancelBtn, hint);
 
       type DragMode = "new" | "move" | { corner: Corner } | null;
       let phase: "drawing" | "adjusting" = "drawing";
@@ -348,6 +375,9 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
       function setHint(text: string): void {
         hint.textContent = text;
       }
+
+      const ACTION_BTN_SIZE = 44;
+      const ACTION_BTN_GAP = 8;
 
       function positionSelBox(r: SelectedRect): void {
         selBox.style.left = `${r.x}px`;
@@ -363,10 +393,24 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
         handles.sw.style.top = `${r.y + r.height - half}px`;
         handles.se.style.left = `${r.x + r.width - half}px`;
         handles.se.style.top = `${r.y + r.height - half}px`;
+
+        // Anchored just outside the box's bottom-right corner, clamped so a
+        // selection near a viewport edge doesn't push either button off-screen.
+        const clampedLeft = Math.min(
+          Math.max(0, r.x + r.width - ACTION_BTN_SIZE),
+          window.innerWidth - ACTION_BTN_SIZE * 2 - ACTION_BTN_GAP,
+        );
+        const clampedTop = Math.min(Math.max(0, r.y + r.height + ACTION_BTN_GAP), window.innerHeight - ACTION_BTN_SIZE);
+        confirmBtn.style.left = `${clampedLeft}px`;
+        confirmBtn.style.top = `${clampedTop}px`;
+        cancelBtn.style.left = `${clampedLeft + ACTION_BTN_SIZE + ACTION_BTN_GAP}px`;
+        cancelBtn.style.top = `${clampedTop}px`;
       }
 
       function showHandles(show: boolean): void {
         for (const corner of HANDLE_CORNERS) handles[corner].style.display = show ? "block" : "none";
+        confirmBtn.style.display = show ? "flex" : "none";
+        cancelBtn.style.display = show ? "flex" : "none";
       }
 
       function enterDrawing(): void {
@@ -386,16 +430,29 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
         selBox.style.pointerEvents = "auto";
         selBox.style.cursor = "move";
         showHandles(true);
-        setHint("Drag to adjust — Enter to confirm, Esc to reselect");
+        setHint("Drag to adjust, or use the buttons below");
       }
+
+      confirmBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      confirmBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (rect) finish(rect);
+      });
+      cancelBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      cancelBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        enterDrawing();
+      });
 
       function cleanup(): void {
         document.removeEventListener("keydown", onKeyDown, true);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
         overlay.remove();
         selBox.remove();
         hint.remove();
+        confirmBtn.remove();
+        cancelBtn.remove();
         for (const corner of HANDLE_CORNERS) handles[corner].remove();
       }
 
@@ -443,7 +500,15 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
 
       // Starting a fresh drag always wins, even mid-adjust — discards
       // whatever was being fine-tuned and draws a new box from scratch.
-      overlay.addEventListener("mousedown", (e) => {
+      //
+      // Pointer Events (not Mouse Events) throughout this tool: they unify
+      // mouse and touch input behind one API, so the exact same handlers
+      // drive both without forking any drag logic. setPointerCapture keeps
+      // move/up events targeted correctly even if a finger drifts off a
+      // small element mid-drag — a real risk for the 10-20px resize
+      // handles, which are far below a fingertip's contact precision.
+      overlay.addEventListener("pointerdown", (e) => {
+        overlay.setPointerCapture(e.pointerId);
         dragMode = "new";
         dragStartX = e.clientX;
         dragStartY = e.clientY;
@@ -456,23 +521,25 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
       });
 
       for (const corner of HANDLE_CORNERS) {
-        handles[corner].addEventListener("mousedown", (e) => {
+        handles[corner].addEventListener("pointerdown", (e) => {
           e.stopPropagation(); // don't also trigger overlay's "start a new box"
+          handles[corner].setPointerCapture(e.pointerId);
           dragMode = { corner };
           dragStartX = e.clientX;
           dragStartY = e.clientY;
           dragStartRect = rect;
         });
       }
-      selBox.addEventListener("mousedown", (e) => {
+      selBox.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
+        selBox.setPointerCapture(e.pointerId);
         dragMode = "move";
         dragStartX = e.clientX;
         dragStartY = e.clientY;
         dragStartRect = rect;
       });
 
-      function onMove(e: MouseEvent): void {
+      function onMove(e: PointerEvent): void {
         if (dragMode === "new") {
           const x = Math.min(dragStartX, e.clientX);
           const y = Math.min(dragStartY, e.clientY);
@@ -510,9 +577,9 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
           positionSelBox(rect);
         }
       }
-      document.addEventListener("mousemove", onMove);
+      document.addEventListener("pointermove", onMove);
 
-      function onUp(e: MouseEvent): void {
+      function onUp(e: PointerEvent): void {
         if (dragMode === "new") {
           const x = Math.min(dragStartX, e.clientX);
           const y = Math.min(dragStartY, e.clientY);
@@ -529,7 +596,7 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
         dragMode = null;
         dragStartRect = null;
       }
-      document.addEventListener("mouseup", onUp);
+      document.addEventListener("pointerup", onUp);
 
       enterDrawing();
     });

@@ -13,14 +13,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "android:run": "npm run build:firefox && web-ext run --source-dir=dist-firefox -t firefox-android",
     "publish:firefox": "npm run build:firefox && web-ext sign --source-dir=dist-firefox --artifacts-dir=web-ext-artifacts --channel=listed --api-key=\"$WEB_EXT_API_KEY\" --api-secret=\"$WEB_EXT_API_SECRET\""
   },
   "dependencies": {
-    "@openapps/sdk": "file:./vendor/sdk",
-    "@openapps/tokens": "file:./vendor/tokens",
-    "@openapps/ui": "file:./vendor/ui",
-    "lit": "^3.3.0",
-    "nostr-tools": "^2.24.1"
+    "@openapps/sdk": "file:../../../sdk/ts",
+    "@openapps/tokens": "file:../../../tokens",
+    "@openapps/ui": "file:../../../ui-elements"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

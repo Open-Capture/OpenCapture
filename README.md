@@ -90,8 +90,9 @@ watermark, and PNG/PDF export all work today. **Not yet published** to
 the Chrome Web Store or Firefox Add-ons — that requires store credentials
 this project doesn't yet have. Until then, install it as an unpacked/
 temporary extension from a local build; see
-[docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md) and
-[docs/FIREFOX_TESTING.md](docs/FIREFOX_TESTING.md).
+[docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md),
+[docs/FIREFOX_TESTING.md](docs/FIREFOX_TESTING.md), and (for Firefox on
+Android) [docs/FIREFOX_ANDROID_TESTING.md](docs/FIREFOX_ANDROID_TESTING.md).
 
 ## Build from source
 
@@ -113,7 +114,8 @@ unpacked** → select `dist/`. In Firefox: `about:debugging#/runtime/this-firefo
 
 Full walkthroughs, including the shared-mount build gotcha and what to
 manually click through, are in [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md),
-[docs/FIREFOX_TESTING.md](docs/FIREFOX_TESTING.md), and
+[docs/FIREFOX_TESTING.md](docs/FIREFOX_TESTING.md),
+[docs/FIREFOX_ANDROID_TESTING.md](docs/FIREFOX_ANDROID_TESTING.md), and
 [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md).
 
 ## Architecture
