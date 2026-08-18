@@ -46,6 +46,5 @@
   "minimum_chrome_version": "116",
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlZLJy12o4LWbUuKDv3+YTQutNv1SVlGNZcgcS7CxeJOFkG80/MJH9hsbKZ9IugT3yCgpA3ISCVYm9pSD/37/3Y0v1rrbph4rrywg9pE3J+kriNUTUq305Jmybs77DcXrEMtmju9vs0ivq21ix37ll3TD/kovdWtoFtV3uHDL1/yrJic5e5b0u+fEPkMeiLKwXogaCFNm9PmutsuJNOnQD3SlD8z7nVKiLRvjXDmErw+StKgx33tjhIh+V1oW2SEGgcEc2q4YVpjSlZwX8ngBNiTQ0K5YI8UUqUGazhK76UyzIbLiKt4mwyygPV1Pc3DT0BRy5zLbG7e97KBzGGCJuwIDAQAB"
+  }
 }
