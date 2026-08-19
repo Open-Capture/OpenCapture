@@ -18,7 +18,26 @@ jobs:
     name: build, sign, submit to AMO
     runs-on: ubuntu-latest
     steps:
+      # apps/extension/vendor-private/watermark-premium is a private
+      # submodule (the Supporter watermark feature) — actions/checkout
+      # can't fetch it with the default GITHUB_TOKEN, which is scoped to
+      # this repo only. Same deploy-key setup as ci.yml's wasm-build job;
+      # see that job's comment for why recursive checkout alone doesn't
+      # work and the key has to be scoped read-only to this one repo.
+      - name: Set up deploy key for the private watermark submodule
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.WATERMARK_PREMIUM_DEPLOY_KEY }}" > ~/.ssh/watermark_premium_deploy
+          chmod 600 ~/.ssh/watermark_premium_deploy
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          {
+            echo "Host github.com"
+            echo "  IdentityFile ~/.ssh/watermark_premium_deploy"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
       - uses: actions/checkout@v4
+      - name: Fetch the private watermark submodule
+        run: git submodule update --init --recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
