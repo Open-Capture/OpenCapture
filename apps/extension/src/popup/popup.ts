@@ -4,6 +4,15 @@ import { getSavedDirectoryHandle } from "../chrome/dir-handle-store";
 import { type LastCaptureUi, getLastCaptureUi } from "../chrome/last-capture-ui";
 import { client as openappsClient, ready as openappsReady } from "../chrome/openapps-session";
 import { pickDirectory } from "../chrome/pick-directory";
+import {
+  getRatingPromptState,
+  getStoreReviewUrl,
+  getFeedbackMailto,
+  getUsageCount,
+  recordPromptDismissed,
+  recordPromptResponded,
+  shouldShowRatingPrompt,
+} from "../chrome/rating-prompt";
 import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
 import { ext } from "../platform/webext";
 import type { PopupRequest, PopupResponse } from "../types";
@@ -116,6 +125,55 @@ async function restoreLastCaptureUi(): Promise<void> {
 }
 
 restoreLastCaptureUi();
+
+// Nudges toward a store rating after real, repeated use — see
+// chrome/rating-prompt.ts for the show-again/never-again rules. Checked
+// on every popup open (not synchronously after a capture) because a
+// single-image capture immediately opens the editor in a new tab, which
+// tears this popup down before it could ever show anything — the same
+// MV3 popup-lifecycle gotcha last-capture-ui.ts already exists to work
+// around, see that file's own comment.
+const ratingPromptEl = $("ratingPrompt");
+const ratingPromptAskEl = $("ratingPromptAsk");
+const ratingPromptFeedbackEl = $("ratingPromptFeedback");
+const ratingPromptThanksEl = $("ratingPromptThanks");
+const ratingFeedbackLinkEl = $("ratingFeedbackLink") as HTMLAnchorElement;
+
+async function initRatingPrompt(): Promise<void> {
+  const [usageCount, state] = await Promise.all([getUsageCount(), getRatingPromptState()]);
+  if (!shouldShowRatingPrompt(usageCount, state)) return;
+  ratingPromptEl.style.display = "block";
+}
+
+initRatingPrompt();
+
+document.querySelectorAll<HTMLButtonElement>(".rating-star").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const stars = Number(btn.dataset.stars);
+    await recordPromptResponded();
+    if (stars >= 4) {
+      // No API on either store lets an extension submit a rating on the
+      // user's behalf — the real review page is the closest a 4-5 star
+      // tap can get to "not leaving the popup," so it opens in a new tab
+      // while this one shows a short acknowledgement instead of just
+      // vanishing.
+      ext.tabs.create({ url: getStoreReviewUrl() });
+      ratingPromptAskEl.style.display = "none";
+      ratingPromptThanksEl.style.display = "block";
+    } else {
+      // A low rating is a signal worth capturing without pushing it into
+      // a public review — routes to feedback instead of the store.
+      ratingFeedbackLinkEl.href = getFeedbackMailto();
+      ratingPromptAskEl.style.display = "none";
+      ratingPromptFeedbackEl.style.display = "block";
+    }
+  });
+});
+
+$("ratingNotNow").addEventListener("click", async () => {
+  await recordPromptDismissed();
+  ratingPromptEl.style.display = "none";
+});
 
 // Only writes #status when going busy — the caller already left the right
 // final text (and error styling, if any) in place before calling

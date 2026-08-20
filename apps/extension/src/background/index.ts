@@ -2,6 +2,7 @@ import { EDITOR_IMAGE_BLOB_KEY, EDITOR_IMAGE_PORT_NAME, deleteBlob, getBlob, put
 import { HISTORY_LIST_PORT_NAME, addHistoryEntry, clearHistory, deleteHistoryEntry, getHistoryEntry, listHistoryEntries } from "../chrome/capture-history";
 import { setLastCaptureUi } from "../chrome/last-capture-ui";
 import { client as openappsClient, ready as openappsReady, store as openappsStore } from "../chrome/openapps-session";
+import { bumpUsageCount } from "../chrome/rating-prompt";
 import { saveOutput } from "../chrome/save";
 import { ext } from "../platform/webext";
 import type { PopupRequest, PopupResponse } from "../types";
@@ -191,6 +192,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       }
       await setLastCaptureUi({ report, openedEditor });
       await rememberInHistory(tab, report, images[0]!);
+      await bumpUsageCount();
       return { ok: true, report, pngDataUrls: images.map((img) => bytesToDataUrl(img, "image/png")), openedEditor };
     }
     case "captureVisible": {
@@ -199,6 +201,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       await openEditorWithBytes(images[0]!, report.dpr);
       await setLastCaptureUi({ report, openedEditor: true });
       await rememberInHistory(tab, report, images[0]!);
+      await bumpUsageCount();
       return { ok: true, report, pngDataUrls: images.map((img) => bytesToDataUrl(img, "image/png")), openedEditor: true };
     }
     case "captureSelectedArea": {
@@ -218,6 +221,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       await openEditorWithBytes(outcome.images[0]!, outcome.report.dpr);
       await setLastCaptureUi({ report: outcome.report, openedEditor: true });
       await rememberInHistory(tab, outcome.report, outcome.images[0]!);
+      await bumpUsageCount();
       return {
         ok: true,
         report: outcome.report,

@@ -2030,6 +2030,84 @@ test("watermark tool: signed in but not yet Supporter shows the 1000-credit unlo
   await page.close();
 });
 
+test("rating prompt: stays hidden until the 3rd real capture, then a 4-5 star tap opens the store review page and hides it for good", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/ruler-3000.html`);
+
+  const windowId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab) throw new Error(`no tab found for ${url}`);
+    return tab.windowId;
+  }, page.url());
+
+  // captureVisibleViaHandleRequest runs the exact same handleRequest()
+  // path a real popup click does (see background/index.ts's own comment
+  // on this hook) — including bumpUsageCount() — just without driving
+  // three full popup UIs through it.
+  async function realCapture() {
+    await serviceWorker.evaluate(async (winId) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      await globalThis.__test.captureVisibleViaHandleRequest();
+    }, windowId);
+  }
+
+  await realCapture();
+  await realCapture();
+
+  const popupAfter2 = await context.newPage();
+  await popupAfter2.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(popupAfter2.locator("#ratingPrompt")).toBeHidden();
+  await popupAfter2.close();
+
+  await realCapture();
+
+  const popupAfter3 = await context.newPage();
+  await popupAfter3.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(popupAfter3.locator("#ratingPrompt")).toBeVisible();
+
+  const [reviewTab] = await Promise.all([context.waitForEvent("page"), popupAfter3.click('.rating-star[data-stars="5"]')]);
+  expect(reviewTab.url()).toContain("chromewebstore.google.com");
+  await reviewTab.close();
+  await expect(popupAfter3.locator("#ratingPromptAsk")).toBeHidden();
+  await expect(popupAfter3.locator("#ratingPromptThanks")).toBeVisible();
+  await popupAfter3.close();
+
+  // Having responded once, it never comes back — not even on a later
+  // popup open past the 10th-use threshold.
+  const popupFinal = await context.newPage();
+  await popupFinal.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(popupFinal.locator("#ratingPrompt")).toBeHidden();
+  await popupFinal.close();
+
+  await page.close();
+});
+
+test("rating prompt: a 1-3 star tap shows a feedback link instead of opening the store page", async ({
+  context,
+  serviceWorker,
+  extensionId,
+}) => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.local.set({ usageCount: 3, ratingPromptState: { timesShown: 0, respondedForever: false } });
+  });
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(popup.locator("#ratingPrompt")).toBeVisible();
+
+  await popup.click('.rating-star[data-stars="2"]');
+  await expect(popup.locator("#ratingPromptAsk")).toBeHidden();
+  await expect(popup.locator("#ratingPromptFeedback")).toBeVisible();
+  await expect(popup.locator("#ratingFeedbackLink")).toHaveAttribute("href", /^mailto:opencaptureapp@proton\.me\?subject=/);
+  await popup.close();
+});
+
 test("account page: connecting a wallet or Nostr identity opens /link instead of attempting an in-page connection", async ({
   context,
   serviceWorker,

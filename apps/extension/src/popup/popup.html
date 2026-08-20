@@ -89,6 +89,24 @@
         max-height: 160px;
         overflow: auto;
       }
+      #ratingPrompt {
+        padding: var(--space-3);
+      }
+      #ratingPrompt .oa-caption {
+        margin: 0 0 var(--space-2);
+      }
+      #ratingStars {
+        display: flex;
+        justify-content: center;
+        gap: var(--space-1);
+        margin-bottom: var(--space-3);
+      }
+      .rating-star {
+        color: var(--text-faint);
+      }
+      .rating-star:hover {
+        color: var(--text-muted);
+      }
     </style>
   </head>
   <body>
@@ -166,6 +184,27 @@
         </div>
         <img id="preview" alt="capture preview" />
         <pre id="report"></pre>
+      </div>
+
+      <div id="ratingPrompt" class="card" style="display: none">
+        <div id="ratingPromptAsk">
+          <p class="oa-caption">Used OpenCapture a few times now. Mind rating it?</p>
+          <div id="ratingStars" role="group" aria-label="Rate OpenCapture">
+            <button type="button" class="icon-btn rating-star" data-stars="1" aria-label="1 star"><span class="oa-icon icon-star"></span></button>
+            <button type="button" class="icon-btn rating-star" data-stars="2" aria-label="2 stars"><span class="oa-icon icon-star"></span></button>
+            <button type="button" class="icon-btn rating-star" data-stars="3" aria-label="3 stars"><span class="oa-icon icon-star"></span></button>
+            <button type="button" class="icon-btn rating-star" data-stars="4" aria-label="4 stars"><span class="oa-icon icon-star"></span></button>
+            <button type="button" class="icon-btn rating-star" data-stars="5" aria-label="5 stars"><span class="oa-icon icon-star"></span></button>
+          </div>
+          <button id="ratingNotNow" type="button" class="btn btn-secondary btn-sm btn-full">Not now</button>
+        </div>
+        <div id="ratingPromptFeedback" style="display: none">
+          <p class="oa-caption">Thanks for the honest rating. Mind telling us what's off?</p>
+          <a id="ratingFeedbackLink" href="#" class="btn btn-secondary btn-sm btn-full" target="_blank" rel="noopener">Send feedback</a>
+        </div>
+        <div id="ratingPromptThanks" style="display: none">
+          <p class="oa-caption">Thanks — opening the store review page.</p>
+        </div>
       </div>
     </div>
     <script type="module" src="./popup.ts"></script>
