@@ -167,7 +167,7 @@ mod tests {
             encoder.set_depth(png::BitDepth::Eight);
             let mut writer = encoder.write_header().unwrap();
             let mut data = vec![0u8; (width * height * 4) as usize];
-            for px in data.chunks_exact_mut(4) {
+            for px in data.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&rgba);
             }
             writer.write_image_data(&data).unwrap();
