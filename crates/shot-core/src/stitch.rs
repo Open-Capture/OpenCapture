@@ -37,7 +37,7 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedSlice, String> {
         png::ColorType::Rgba => raw.to_vec(),
         png::ColorType::Rgb => {
             let mut out = Vec::with_capacity(raw.len() / 3 * 4);
-            for px in raw.chunks_exact(3) {
+            for px in raw.as_chunks::<3>().0 {
                 out.extend_from_slice(px);
                 out.push(255);
             }
@@ -45,7 +45,7 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedSlice, String> {
         }
         png::ColorType::GrayscaleAlpha => {
             let mut out = Vec::with_capacity(raw.len() * 2);
-            for px in raw.chunks_exact(2) {
+            for px in raw.as_chunks::<2>().0 {
                 let (g, a) = (px[0], px[1]);
                 out.extend_from_slice(&[g, g, g, a]);
             }
