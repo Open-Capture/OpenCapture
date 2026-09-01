@@ -50,7 +50,9 @@ test("selection shows its output size live, locks to a typed ratio, and delivers
   const locked = await page.locator(SIZE).textContent();
   expect(locked).toMatch(/^\d+ × \d+ → 640 × 360$/);
 
-  const [w, h] = locked!.match(/^(\d+) × (\d+)/)!.slice(1).map(Number);
+  const lockedMatch = locked!.match(/^(\d+) × (\d+)/)!;
+  const w = Number(lockedMatch[1]);
+  const h = Number(lockedMatch[2]);
   // 16:9, to within the rounding of a whole pixel.
   expect(w / h).toBeCloseTo(640 / 360, 1);
   // The selection is nothing like 640x360 — that is the point: the drag sets
@@ -63,7 +65,9 @@ test("selection shows its output size live, locks to a typed ratio, and delivers
   await page.mouse.move(500, 500, { steps: 5 });
   await page.mouse.up();
   const afterResize = (await page.locator(SIZE).textContent())!;
-  const [rw, rh] = afterResize.match(/^(\d+) × (\d+)/)!.slice(1).map(Number);
+  const resizeMatch = afterResize.match(/^(\d+) × (\d+)/)!;
+  const rw = Number(resizeMatch[1]);
+  const rh = Number(resizeMatch[2]);
   expect(rw / rh).toBeCloseTo(640 / 360, 1);
 
   await page.keyboard.press("Enter");
