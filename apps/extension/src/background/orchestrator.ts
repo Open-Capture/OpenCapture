@@ -1,3 +1,4 @@
+import { getCapturePrefs } from "../chrome/capture-prefs";
 import { explainInjectionFailure } from "./injection-error";
 import { captureVisibleTabPaced } from "../chrome/capture";
 import { LAST_CAPTURE_BLOB_KEY, extraLastCaptureBlobKey, getBlob, putBlob } from "../chrome/blob-store";
@@ -85,7 +86,8 @@ export async function captureFullPage(tabId: number, windowId: number): Promise<
 
   const shotCore = await loadShotCore();
 
-  const prep = await sendToContent<PrepResponse>(tabId, { action: "prep" });
+  const { sticky } = await getCapturePrefs();
+  const prep = await sendToContent<PrepResponse>(tabId, { action: "prep", sticky });
   const metrics: PageMetrics = prep.metrics;
   const innerRect = prep.innerScrollRect;
 

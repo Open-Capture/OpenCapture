@@ -14,6 +14,7 @@ import {
   shouldShowRatingPrompt,
 } from "../chrome/rating-prompt";
 import { getSavePrefs, setSavePrefs } from "../chrome/save-prefs";
+import { getCapturePrefs, setCapturePrefs, type StickyMode } from "../chrome/capture-prefs";
 import { ext } from "../platform/webext";
 import type { PopupRequest, PopupResponse } from "../types";
 
@@ -59,6 +60,17 @@ async function loadSavePrefs(): Promise<void> {
   prefAskWhereEl.checked = prefs.askWhereToSave;
 }
 
+const prefStickyEl = $("prefSticky") as HTMLSelectElement;
+
+async function loadCapturePrefs(): Promise<void> {
+  const { sticky } = await getCapturePrefs();
+  prefStickyEl.value = sticky;
+}
+
+prefStickyEl.addEventListener("change", () => {
+  void setCapturePrefs({ sticky: prefStickyEl.value as StickyMode });
+});
+
 async function persistSavePrefs(): Promise<void> {
   await setSavePrefs({
     folder: "",
@@ -76,6 +88,7 @@ prefAskWhereEl.addEventListener("change", () => {
   void refreshCustomFolder();
 });
 loadSavePrefs();
+loadCapturePrefs();
 
 /** One line describing where the next capture lands, for the collapsed row. */
 function setSaveSummary(destination: string): void {
